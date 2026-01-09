@@ -4,19 +4,19 @@ import { Menu } from "lucide-react";
 import { useState, } from "react";
 
 
-import { Sidebar } from "./components/Sidebar";
-import { LoginPage } from "./components/pages/LoginPage";
-import { UserDashboard } from "./components/pages/UserDashboard";
-import { UploadPage } from "./components/pages/UploadPage";
-import { MappingPage } from "./components/pages/MappingPage";
-import { ResultPage } from "./components/pages/ResultPage";
-import { HistoryPage } from "./components/pages/HistoryPage";
-import { AdminDashboard } from "./components/pages/AdminDashboard";
-import { MappingRulesPage } from "./components/pages/MappingRulesPage";
-import { UserAccessPage } from "./components/pages/UserAccessPage";
+import { Sidebar } from "./components/Sidebar.tsx";
+import { LoginPage } from "./components/pages/LoginPage.tsx";
+import { UserDashboard } from "./components/pages/UserDashboard.tsx";
+import { UploadPage } from "./components/pages/UploadPage.tsx";
+import { MappingPage } from "./components/pages/MappingPage.tsx";
+import { ResultPage } from "./components/pages/ResultPage.tsx";
+import { HistoryPage } from "./components/pages/HistoryPage.tsx";
+import { AdminDashboard } from "./components/pages/AdminDashboard.tsx";
+import { MappingRulesPage } from "./components/pages/MappingRulesPage.tsx";
+import { UserAccessPage } from "./components/pages/UserAccessPage.tsx";
 
-import { useAuth } from "./context/AuthContext";
-import ProtectedRoute from "./components/ProtectedRoutes";
+import { useAuth } from "./context/AuthContext.tsx";
+import ProtectedRoute from "./components/ProtectedRoutes.tsx";
 
 export default function App() {
   const { user, loading, logout } = useAuth();
