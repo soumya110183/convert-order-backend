@@ -1,10 +1,15 @@
 import ExcelJS from "exceljs";
 import path from "path";
 import fs from "fs";
+import { fileURLToPath } from "url";
 import { normalizeKey } from "../utils/normalizeKey.js";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const TEMPLATE_PATH = path.join(
-  process.cwd(),
-  "uploads",
+  __dirname,
+  "../templates",
   "Order Training.xlsx"
 );
 
@@ -12,7 +17,8 @@ let TRAINING_COLUMNS = [];
 
 export const initTrainingTemplate = async () => {
   if (!fs.existsSync(TEMPLATE_PATH)) {
-    throw new Error("Order Training.xlsx not found");
+    console.warn("⚠️ Training template missing, skipping initialization");
+    return; // ⬅️ DO NOT crash production
   }
 
   const workbook = new ExcelJS.Workbook();
@@ -21,11 +27,10 @@ export const initTrainingTemplate = async () => {
   const sheet = workbook.worksheets[0];
   const headerRow = sheet.getRow(1);
 
- TRAINING_COLUMNS = headerRow.values
-  .slice(1)
-  .map(v => normalizeKey(v.toString()))
-  .filter(Boolean);
-
+  TRAINING_COLUMNS = headerRow.values
+    .slice(1)
+    .map(v => normalizeKey(String(v)))
+    .filter(Boolean);
 
   console.log("✅ Training template loaded:", TRAINING_COLUMNS);
 };
