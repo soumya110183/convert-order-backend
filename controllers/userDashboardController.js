@@ -1,4 +1,4 @@
-import OrderUpload from "../models/OrderUpload.js";
+import OrderUpload from "../models/orderUpload.js";
 
 export const getUserDashboard = async (req, res, next) => {
   try {
