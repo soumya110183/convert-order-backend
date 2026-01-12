@@ -1,89 +1,96 @@
 /**
- * COMPLETE UNIFIED PARSER
- * Includes: Enhanced PDF parser + Enhanced Excel parser + Text parser
+ * PRODUCTION-GRADE UNIFIED PARSER
+ * Strategy: Hybrid Rule-Based Pipeline
+ * 1. Normalization -> 2. Context Analysis -> 3. Multi-Strategy Row Extraction -> 4. Validation
  */
 
 import { extractTextFromPDFAdvanced } from "./pdfParser.js";
 import { normalizeKey } from "../utils/normalizeKey.js";
 import XLSX from "xlsx";
 
+/* ========================================================================
+   CONSTANTS & CONFIG
+   ======================================================================== */
+
 const TEMPLATE_COLUMNS = [
-  "CODE",
-  "CUSTOMER NAME", 
-  "SAPCODE",
-  "ITEMDESC",
-  "ORDERQTY",
-  "BOX PACK",
-  "PACK",
-  "DVN"
+  "CODE", "CUSTOMER NAME", "SAPCODE", "ITEMDESC",
+  "ORDERQTY", "BOX PACK", "PACK", "DVN"
 ];
 
 const QTY_LIMITS = { MIN: 1, MAX: 10000 };
-const SAPCODE_PATTERN = /^\d{4,7}$/;
+const SAPCODE_REGEX = /^\d{4,7}$/; // Strict 4-7 digit check
+const HSN_REGEX = /^\d{8}$/;       // HSN is usually 8 digits
+
+// Banned words for Item Description
+const BANNED_ITEM_KEYWORDS = [
+  "TOTAL", "SUBTOTAL", "GRAND TOTAL", "NET VALUE", "GROSS VALUE",
+  "PAGE", "INVOICE", "CONTINUED", "NOTE", "REMARKS", "AUTHORISED",
+  "SIGNATORY", "POWERED BY", "AMOUNT", "TAXABLE", "GSTIN"
+];
+
+const CITY_BLOCKLIST = [
+  "ERNAKULAM", "KOZHIKODE", "THRISSUR", "TRIVANDRUM", "KANNUR", 
+  "WAYANAD", "PALAKKAD", "MALAPPURAM", "IDUKKI", "KOTTAYAM", 
+  "ALAPPUZHA", "KOLLAM", "PATHANAMTHITTA", "KASARAGOD", "COCHIN",
+  "CALICUT", "TRICHUR"
+];
 
 /* ========================================================================
-   UTILITY FUNCTIONS
-======================================================================== */
+   1. UTILITY LAYER (Helpers)
+   ======================================================================== */
 
 function clean(text = "") {
   return String(text).replace(/\s+/g, " ").trim();
 }
 
-function safeInt(value, defaultVal = 0) {
-  if (value === null || value === undefined) return defaultVal;
-  const n = typeof value === "number" ? value : parseInt(String(value).replace(/[^\d]/g, ""), 10);
-  return Number.isInteger(n) ? n : defaultVal;
-}
-
-function validateQty(qty) {
-  const n = safeInt(qty, 0);
+/**
+ * Validates integer quantity within business limits
+ */
+function validateQty(value) {
+  if (value === null || value === undefined) return 0;
+  // Remove commas, spaces
+  const cleanVal = String(value).replace(/[,\s]/g, "");
+  // Check if it's a number
+  if (!/^\d+$/.test(cleanVal)) return 0;
+  
+  const n = parseInt(cleanVal, 10);
   return (n >= QTY_LIMITS.MIN && n <= QTY_LIMITS.MAX) ? n : 0;
 }
 
-function isSAPCode(token) {
-  return SAPCODE_PATTERN.test(String(token).trim());
-}
-
+/**
+ * Cleans extracted item description
+ */
 function cleanItemDesc(text) {
   return clean(text)
     .replace(/\[approx\s*value\s*:.*?\]/gi, "")
-    .replace(/\b(gm|mg|ml|caps?|tabs?|tablet|capsule|syrup|injection|inj|strip|pack|box|bottle|vial)\b/gi, "")
-    .replace(/\d+\s*['"]s?\b/gi, "")
+    // Fix common OCR/Typo for pack sizes e.g. "10''s" or "10's"
+    .replace(/\b\d+\s*['"]+\s*s\b/gi, "")
+    .replace(/\b\d+\s+(strip|pack|box|bottle|vial|tube)\b/gi, "")
+    // Remove known noise
     .replace(/\*\d+/g, "")
     .replace(/\+\d+\s*(free|bonus)/gi, "")
-    .replace(/\s+\*+\s*$/g, "")
+    .replace(/^[\s*]+|[\s*]+$/g, "")
     .replace(/\s{2,}/g, " ")
     .trim();
 }
 
+/**
+ * Clean customer name extraction
+ */
 function cleanCustomerName(text) {
   return clean(text)
-    .replace(/\d{2}\/\d{2}\/\d{4}/g, "")
+    .replace(/\d{2}\/\d{2}\/\d{4}/g, "") // Dates
     .replace(/(address|gstin|gst|pan|dl\s*no|mob|mobile|email|phone|fssai|tin)[\s:].*/gi, "")
     .replace(/[,;:]+$/, "")
     .trim();
 }
 
-function isNoiseKeyword(line) {
-  const noisePatterns = [
-    /^(bills?\s*not\s*paid)/i,
-    /^(powered\s*by)/i,
-    /^(invoice\s*no|inv\s*no)/i,
-    /^(page\s*\d+|continued)/i,
-    /(cancel|pending|authorised|authorized|signatory)/i,
-    /(note\s*:|remarks?|split\s*details|terms\s*&?\s*conditions)/i,
-    /(total\s*value|net\s*value|gross\s*value)/i,
-    /due\s*date\s*will\s*attract/i,
-    /interest|thank\s*you|signature/i,
-  ];
-  return noisePatterns.some(pattern => pattern.test(line));
-}
-
-function isTableStopLine(line) {
-  return /^(grand\s*total|net\s*total|gross\s*total|total\s*order|end\s*of\s*order)/i.test(line);
-}
+/* ========================================================================
+   2. CONTEXT ANALYSIS LAYER (Customer, Headers)
+   ======================================================================== */
 
 function extractCustomerName(lines) {
+  // ... (keep existing implementation or ensure check)
   const patterns = [
     /(?:supplier|party\s*name|buyer|customer|bill\s*to|ship\s*to)\s*[:\-]\s*(.+)/i,
     /^([A-Z][A-Z\s&.]+(?:ENTERPRISES|AGENCIES|DISTRIBUTORS|PHARMA|HEALTHCARE|MEDICALS?|LTD|PVT|LIMITED|INC))/i,
@@ -91,10 +98,7 @@ function extractCustomerName(lines) {
 
   for (let i = 0; i < Math.min(lines.length, 40); i++) {
     const line = clean(lines[i]);
-    
-    if (/^(gstin|gst|pan|dl|mob|email|phone|address|fssai|tin)/i.test(line)) {
-      continue;
-    }
+    if (/^(gstin|gst|pan|dl|mob|email|phone|address|fssai|tin)/i.test(line)) continue;
 
     for (const pattern of patterns) {
       const match = line.match(pattern);
@@ -106,257 +110,254 @@ function extractCustomerName(lines) {
       }
     }
   }
-
   return "UNKNOWN CUSTOMER";
 }
 
+/**
+ * Strict Division Line Detection
+ */
 function isDivisionLine(line) {
-  return (
-    /^[A-Z][A-Z0-9\- ]{5,}$/.test(line) &&      // ALL CAPS
-    !/TOTAL|ORDER|PURCHASE|INVOICE/.test(line)
-  );
-}
-function isDivisionTotal(line) {
-  return /division\s+total/i.test(line);
+  // 1. Exclude known customer entity keywords
+  if (/DISTRIBUTORS|AGENCIES|ENTERPRISES|TRADERS|PHARMA|HEALTHCARE|MEDICALS?|LTD|PVT|LIMITED|INC|CORP/i.test(line)) {
+    if (!/^(division|company)/i.test(line)) {
+        return false;
+    }
+  }
+  
+  // 2. Exclude Cities (False Positives)
+  const upperLine = line.toUpperCase();
+  if (CITY_BLOCKLIST.some(city => upperLine.includes(city))) {
+      // If it's JUST the city name (or very short), reject it
+      if (line.length < 20 || /^[A-Z\s]+$/.test(line)) {
+          return false;
+      }
+  }
+
+  // 3. Exclude totals and noise
+  if (/TOTAL|ORDER|PURCHASE|INVOICE|SUMMARY|ABSTRACT/i.test(line)) {
+    return false;
+  }
+
+  // 4. Explicit "Company: ..." or "Division: ..." pattern
+  if (/^(company|division)\s*[:\-]\s*/i.test(line)) {
+    return true;
+  }
+
+  // 5. Fallback: Must be mostly uppercase and have semantic length
+  return /^[A-Z][A-Z0-9\- ()\.]{5,}$/.test(line);
 }
 
+function isTableStopLine(line) {
+  return /^(grand\s*total|net\s*total|gross\s*total|total\s*order|end\s*of\s*order|page\s*total|approx\s*value)/i.test(line);
+}
 
 /* ========================================================================
-   PRODUCT LINE PARSER
-======================================================================== */
+   3. SEMANTIC ROW EXTRACTION LAYER (The Core Logic)
+   ======================================================================== */
 
 function tokenizeLine(line) {
   return line.split(/\s+/).filter(t => t.length > 0);
 }
 
-function parseProductLineTokens(line) {
+function parseRowFormatted(line) {
   const cleanLine = clean(line);
   if (!cleanLine) return null;
 
-  if (isTableStopLine(cleanLine) || isNoiseKeyword(cleanLine)) {
-    return null;
-  }
-
-  if (!/\d/.test(cleanLine)) {
-    return null;
-  }
-
-  if (/^(?:company\s*name|comapany\s*name|division\s*name)\s*[:\-]/i.test(cleanLine)) {
-    return null;
-  }
-
-  if (/^(company|division|comapany)\s*$/i.test(cleanLine)) {
-    return null;
-  }
+  if (isTableStopLine(cleanLine)) return null;
+  if (!/\d/.test(cleanLine)) return null;
+  
+  const isNoise = BANNED_ITEM_KEYWORDS.some(kw => cleanLine.toUpperCase().includes(kw));
+  if (isNoise) return null;
 
   const tokens = tokenizeLine(cleanLine);
   if (tokens.length < 2) return null;
 
-  let sapcode = "";
-  let orderqty = 0;
-  let itemdesc = "";
-
+  // --- ANALYSIS PHASE ---
   let sapIndex = -1;
-  for (let i = 0; i < tokens.length; i++) {
-    if (isSAPCode(tokens[i])) {
-      sapcode = tokens[i];
-      sapIndex = i;
-      break;
-    }
-  }
-
   let qtyIndex = -1;
+  let hsnIndex = -1;
+  let matches = { sap: null, qty: 0, item: null };
+
+  tokens.forEach((token, i) => {
+    // Check SAP (4-7 digits)
+    if (SAPCODE_REGEX.test(token)) {
+      // Ambiguity Check: Dosage vs SAP
+      // If the number is a common dosage (250, 500, 650, 1000) AND it's not the very first token
+      // we assume it's part of the name unless we are very sure.
+      const num = parseInt(token);
+      const isDosageLike = [250, 500, 650, 1000].includes(num);
+      
+      if (isDosageLike && i > 0) {
+          // Ignore as SAP candidate
+      } else if (sapIndex === -1) {
+          sapIndex = i;
+      }
+    }
+    // Check HSN (8 digits)
+    if (HSN_REGEX.test(token)) {
+      hsnIndex = i;
+    }
+  });
+
+  // Backward search for Quantity (usually towards the end, but before prices)
+  // We look for the last valid integer that is NOT a price (no decimal)
   for (let i = tokens.length - 1; i >= 0; i--) {
     const token = tokens[i];
+    // Skip prices (anything with dot)
+    if (token.includes(".")) continue;
+    // Skip strict exclusions
+    if (/^(free|bonus|sch|total)$/i.test(token)) continue;
     
-    if (/^(free|bonus|scheme|value|rate|price|amount|mrp|ptr|pts|total)$/i.test(token)) {
-      continue;
-    }
-
-    const qty = validateQty(token);
-    if (qty > 0) {
-      orderqty = qty;
+    // If it's the SAP code found earlier, stop looking rightwards for QTY? 
+    // Actually QTY usually comes AFTER SAP or AFTER Item.
+    
+    // Check validation
+    const val = validateQty(token);
+    if (val > 0) {
       qtyIndex = i;
-      break;
+      matches.qty = val;
+      break; // Found the right-most valid quantity
     }
   }
 
-  if (sapIndex !== -1 && qtyIndex !== -1 && qtyIndex > sapIndex + 1) {
-    const descTokens = tokens.slice(sapIndex + 1, qtyIndex);
-    itemdesc = cleanItemDesc(descTokens.join(" "));
-  } else if (sapIndex === -1 && qtyIndex !== -1) {
-    const descTokens = tokens.slice(0, qtyIndex);
-    itemdesc = cleanItemDesc(descTokens.join(" "));
+  // If we found HSN but no SAP, ensure we don't treat HSN as SAP
+  if (sapIndex !== -1 && tokens[sapIndex].length === 8) {
+    // It's actually HSN, not SAP (if strict 4-7 rule didn't catch it)
+    sapIndex = -1; 
   }
 
-  if (itemdesc) {
-    const companyPatterns = [
-      /^(?:company\s*name|comapany\s*name|division\s*name)/i,
-      /^(?:micro|pharma|labs?|ltd|pvt|limited|inc|corp)/i,
-    ];
+  // --- STRATEGY A: COMPOSITE PHARMA FORMAT ---
+  // Format: [Serial] [MFR] [ITEM NAME] [PACK] [HSN/SAP] [QTY] ...
+  // This is the most complex one. We expect Item Name to be to the left of Pack/HSN/Qty.
+  
+  if (matches.qty > 0) {
+    let startIndex = 0;
     
-    if (companyPatterns.some(pattern => pattern.test(itemdesc)) && !orderqty) {
-      return null;
+    // Skip Serial Number (1-3 digits at start)
+    if (/^\d{1,3}$/.test(tokens[0]) && tokens.length > 2) {
+      startIndex = 1;
     }
 
-    if (/^(bills?|powered|invoice|inv|page|continued)/i.test(itemdesc)) {
-      return null;
+    // Determine End of Description
+    // The description ends when we hit:
+    // 1. Pack Size (10's, 15 S, etc.)
+    // 2. HSN or SAP Code
+    // 3. The Quantity itself
+    // 4. A Price (decimal)
+    
+    let endIndex = tokens.length; // Fallback
+
+    // --- STRATEGY B: SAP CODE FIRST ---
+    // Format: [Serial] [SAP 6-7 digits] [ITEM NAME] [PACK] [QTY] ...
+    // E.g. "1 203034 ANORELIEF CREAM 30 GM 10"
+    
+    // Check if the token at startIndex is a valid SAP code (6-7 digits usually here)
+    if (tokens[startIndex] && /^\d{6,7}$/.test(tokens[startIndex])) {
+        // We found SAP at start. Update sapIndex if not strict
+        sapIndex = startIndex;
+        startIndex++; // Move description start forward
     }
 
-    const alphaChars = itemdesc.replace(/[^a-zA-Z]/g, "");
-    if (alphaChars.length < 3) {
-      return null;
+    for (let i = startIndex; i < tokens.length; i++) {
+        const t = tokens[i];
+        const nextT = tokens[i+1];
+
+        // Stop at SAP (if we found another one, though unlikely if Strategy B matched)
+        if (i === sapIndex && i > startIndex) { endIndex = i; break; }
+        
+        // Stop at HSN
+        if (i === hsnIndex) { endIndex = i; break; }
+
+        // Stop at QTY
+        if (i === qtyIndex) { endIndex = i; break; }
+
+        // Stop at Price
+        if (t.includes(".") && /\d/.test(t)) { endIndex = i; break; }
+
+        // Stop at Pack Size Pattern
+        // "10 S", "10'S", "10 TAB", "1X10", "30 GM"
+        const isPackPattern = 
+            (/^\d+['"]?s?$/i.test(t) && (!nextT || /^[a-z]+$/i.test(nextT) === false)) || // 10s
+            (/^\d+$/.test(t) && nextT && /^(s|gm|ml|kg|tab|cap|tube)$/i.test(nextT)) || // 10 s, 30 gm
+            (/^\d+[xX]\d+$/.test(t)); // 1x10
+        
+        if (isPackPattern) { endIndex = i; break; }
+    }
+
+    // Extract Description
+    if (endIndex > startIndex) {
+        const rawDesc = tokens.slice(startIndex, endIndex).join(" ");
+        matches.item = cleanItemDesc(rawDesc);
     }
   }
 
-  if (!itemdesc || itemdesc.length < 2 || !orderqty) {
-    return null;
+  matches.sap = (sapIndex !== -1) ? tokens[sapIndex] : "";
+
+  // Helper validation
+  if (isValidExtraction(matches)) {
+    return {
+        sapcode: matches.sap,
+        itemdesc: matches.item,
+        orderqty: matches.qty
+    };
   }
 
-  return { sapcode: sapcode || "", itemdesc, orderqty };
+  return null;
+}
+
+function isValidExtraction(m) {
+  if (!m.item || m.item.length < 3) return false;
+  if (!m.qty || m.qty <= 0) return false;
+  
+  // Re-check for keywords in extracted description
+  const upperDesc = m.item.toUpperCase();
+  if (BANNED_ITEM_KEYWORDS.some(kw => upperDesc.includes(kw))) return false;
+
+  return true;
 }
 
 /* ========================================================================
-   PDF PARSER
-======================================================================== */
+   4. FILE-TYPE HANDLERS
+   ======================================================================== */
 
+// --- PDF HANDLER ---
 export async function extractPurchaseOrderPDF(file) {
   try {
     const { lines } = await extractTextFromPDFAdvanced(file.buffer);
     const customerName = extractCustomerName(lines);
     const dataRows = [];
 
-    let state = "OUTSIDE_TABLE";
+    // State Machine
     let currentDVN = "";
-    let pendingSAPCode = null;
+    
+    // Multi-line context (unlikely needed with robust row parsing, but kept for PDF split lines)
+    // For deterministic behavior, we will strictly process line-by-line first.
+    // Enhanced PDF parser usually merges rows, so we assume 1 line = 1 row mostly.
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = clean(lines[i]);
-      if (!line) continue;
+    for (const line of lines) {
+      const cleanLine = clean(line);
+      if (!cleanLine) continue;
 
-      if (isNoiseKeyword(line)) continue;
-
-      if (/^(gstin|gst|mob|mobile|dl\s*no|pan|tin|email|phone|address|fssai)/i.test(line)) {
+      // 1. Division Check
+      if (isDivisionLine(cleanLine)) {
+        currentDVN = cleanLine;
         continue;
       }
 
-      const companyMatch = line.match(/(?:company|division)\s*[:\-]\s*(.+)/i);
-      if (companyMatch) {
-        let dvn = clean(companyMatch[1]);
-        dvn = dvn.replace(/\[approx\s*value\s*:.*?\]/gi, "").trim();
-        currentDVN = dvn;
-        
-        if (state === "OUTSIDE_TABLE") {
-          state = "INSIDE_TABLE";
-        }
-        pendingSAPCode = null;
-        continue;
-      }
-
-      if (/^(?:company\s*name|comapany\s*name)\s*[:\-]/i.test(line)) {
-        const nameMatch = line.match(/^(?:company\s*name|comapany\s*name)\s*[:\-]\s*(.+)/i);
-        if (nameMatch) {
-          let dvn = clean(nameMatch[1]);
-          dvn = dvn.replace(/\[approx\s*value\s*:.*?\]/gi, "").trim();
-          currentDVN = dvn;
-          pendingSAPCode = null;
-          continue;
-        }
-      }
-
-      if (/^(company|division|comapany)\s*$/i.test(line)) continue;
-
-      if (state === "OUTSIDE_TABLE") {
-        const isHeader = /(sl\s*no|s\.no|sr\s*no).*(code|item|product)/i.test(line) ||
-                        /(item|product).*(qty|quantity|order)/i.test(line) ||
-                        /(code).*(qty|quantity)/i.test(line);
-        
-        const startsWithSAP = /^\d{4,7}\s/.test(line);
-        
-        if (isHeader || startsWithSAP) {
-          state = "INSIDE_TABLE";
-          pendingSAPCode = null;
-          continue;
-        }
-      }
-
-      // ✅ DIVISION HEADER (e.g. MICRO-CARDICARE-DIV)
-if (isDivisionLine(line)) {
-  currentDVN = clean(line);
-  pendingSAPCode = null;
-  pendingItemDesc = null;
-  continue;
-}
-
-// ✅ DIVISION TOTAL → ignore, DO NOT stop table
-if (isDivisionTotal(line)) {
-  continue;
-}
-
-
-      if (state !== "INSIDE_TABLE") continue;
-
-      if (isTableStopLine(line)) {
-        state = "OUTSIDE_TABLE";
-        pendingSAPCode = null;
-        continue;
-      }
-
-      const product = parseProductLineTokens(line);
-
-      if (product) {
-        const isCompanyName = /^(?:micro|pharma|carsyon|labs?|division|company)/i.test(product.itemdesc) &&
-                              product.itemdesc.split(/\s+/).length <= 3 &&
-                              !product.sapcode;
-
-        if (isCompanyName) {
-          pendingSAPCode = null;
-          continue;
-        }
-
-    if (pendingSAPCode && pendingItemDesc && product?.orderqty) {
-  dataRows.push([
-    customerName,
-    pendingSAPCode,
-    pendingItemDesc,
-    product.orderqty,
-    currentDVN
-  ]);
-  pendingSAPCode = null;
-  pendingItemDesc = null;
-  continue;
-}
-
-
-        if (product.itemdesc && product.orderqty) {
-          dataRows.push([customerName, product.sapcode, product.itemdesc, product.orderqty, currentDVN]);
-          pendingSAPCode = null;
-          continue;
-        }
-
-        if (product.sapcode && !product.itemdesc) {
-          pendingSAPCode = product.sapcode;
-        }
-      } else {
-        if (isSAPCode(line)) {
-          pendingSAPCode = line;
-        }
+      // 2. Row Extraction
+      const row = parseRowFormatted(cleanLine);
+      if (row) {
+        dataRows.push([
+            customerName,
+            row.sapcode,
+            row.itemdesc,
+            row.orderqty,
+            currentDVN
+        ]);
       }
     }
 
-    const validRows = dataRows.filter(row => {
-      const [customer, sapcode, itemdesc, orderqty, dvn] = row;
-      
-      if (!itemdesc || itemdesc.length < 2) return false;
-      if (orderqty < QTY_LIMITS.MIN || orderqty > QTY_LIMITS.MAX) return false;
-      if (/^(bills?|powered|invoice|inv\s*no)/i.test(itemdesc)) return false;
-      
-      return true;
-    });
-
-    console.log(`📊 PDF: ${lines.length} lines → ${dataRows.length} raw → ${validRows.length} valid`);
-
-    return createTemplateOutput(validRows, customerName);
+    return createTemplateOutput(dataRows, customerName);
 
   } catch (err) {
     console.error("❌ PDF extraction failed:", err);
@@ -364,216 +365,165 @@ if (isDivisionTotal(line)) {
   }
 }
 
-/* ========================================================================
-   EXCEL PARSER
-======================================================================== */
-
+// --- EXCEL HANDLER ---
 export async function extractInvoiceExcel(file) {
   try {
-    const workbook = XLSX.read(file.buffer, {
-      type: "buffer",
-      cellText: false,
-      raw: false
-    });
-
+    const workbook = XLSX.read(file.buffer, { type: "buffer", cellText: false });
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
-    const rows = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      defval: "",
-      blankrows: false
-    });
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-    if (!rows || rows.length === 0) {
-      return createEmptyResult("EMPTY_FILE");
+    if (!rows.length) return createEmptyResult("EMPTY_FILE");
+
+    // Try to find customer name from top rows
+    const topText = rows.slice(0, 10).map(r => r.join(" ")).join("\n");
+    const customerName = extractCustomerName(topText.split("\n"));
+
+    // Find Header Row
+    // We look for [Product/Item] AND [Qty]
+    let headerIdx = -1;
+    let colMap = { item: -1, qty: -1, sap: -1, code: -1 };
+    
+    // Scan deeper for headers (up to 50 rows)
+    for (let i = 0; i < Math.min(rows.length, 50); i++) {
+        const row = rows[i].map(c => normalizeKey(String(c)));
+        
+        // Skip obvious data rows that might look like headers if we're not careful
+        // (but usually headers don't have quantities)
+        
+        // Find columns with fuzzy matching
+        const descIdx = row.findIndex(c => 
+            (c.includes("item") || c.includes("product") || c.includes("desc") || c.includes("particular") || c.includes("material")) && 
+            !c.includes("total")
+        );
+        
+        const qtyIdx = row.findIndex(c => 
+            (c.includes("qty") || c.includes("quantity") || c.includes("order") || c.includes("bil")) && 
+            !c.includes("free") && !c.includes("sch")
+        );
+        
+        if (descIdx !== -1 && qtyIdx !== -1) {
+            headerIdx = i;
+            colMap.item = descIdx;
+            colMap.qty = qtyIdx;
+            // SAP/Code is optional but helpful
+            colMap.sap = row.findIndex(c => c.includes("sap") || c.includes("code") || c.includes("hsn"));
+            break;
+        }
     }
 
-    const headerIndex = findHeaderRow(rows);
+    const dataRows = [];
     let currentDVN = "";
 
-    if (headerIndex === -1) {
-      const customerName = extractCustomerName(
-        rows.slice(0, 10).map(r => r.join(" "))
-      );
-
-      const dataRows = [];
-
-      for (const row of rows) {
-        const cells = row.map(c => clean(String(c || ""))).filter(Boolean);
-        if (!cells.length) continue;
-
-        // ✅ DIVISION ROW
-        if (cells.length === 1 && isDivisionLine(cells[0])) {
-          currentDVN = cells[0];
-          continue;
+    // Process Data
+    const startRow = headerIdx !== -1 ? headerIdx + 1 : 0;
+    
+    for (let i = startRow; i < rows.length; i++) {
+        const row = rows[i];
+        
+        // Division Check (if it's a single cell row usually)
+        const filledCells = row.filter(c => c && String(c).trim());
+        if (filledCells.length === 1) {
+            const cellVal = String(filledCells[0]).trim();
+            if (isDivisionLine(cellVal)) {
+                currentDVN = cellVal;
+                continue;
+            }
         }
 
-        // ❌ Division total
-        if (cells.some(c => isDivisionTotal(c))) continue;
+        // Extraction Strategy
+        let item = "";
+        let qty = 0;
+        let sap = "";
+        let usedStrategy = "none";
 
-        // Product row: [Item, Pack, Qty]
-        const itemdesc = cleanItemDesc(cells[1] || cells[0]);
-        const qty = validateQty(cells[cells.length - 1]);
-
-        if (itemdesc && qty > 0) {
-          dataRows.push([
-            customerName,
-            "",
-            itemdesc,
-            qty,
-            currentDVN
-          ]);
+        // Strategy 1: Column Mapping (if headers found)
+        if (headerIdx !== -1) {
+            item = String(row[colMap.item] || "");
+            qty = validateQty(row[colMap.qty]);
+            if (colMap.sap !== -1) sap = String(row[colMap.sap] || "");
+            
+            if (isValidExtraction({ item, qty })) {
+                usedStrategy = "column";
+            }
+        } 
+        
+        // Strategy 2: Semantic Row Parsing (Fallback or Primary if no headers)
+        // If Strategy 1 failed or headers weren't found, try parsing the whole row text
+        if (usedStrategy === "none") {
+            const line = row.join(" "); // Join with space to simulate text line
+            // We use the same powerful logic used for PDFs
+            const parsed = parseRowFormatted(line);
+            if (parsed) {
+                item = parsed.itemdesc;
+                qty = parsed.orderqty;
+                sap = parsed.sapcode;
+                usedStrategy = "semantic";
+            }
         }
-      }
 
-      return createTemplateOutput(dataRows, customerName);
+        // Post-processing
+        item = cleanItemDesc(item);
+
+        if (isValidExtraction({ item, qty })) {
+            dataRows.push([
+                customerName,
+                sap,
+                item,
+                qty,
+                currentDVN
+            ]);
+        }
     }
 
-    return createEmptyResult("EXCEL_EXTRACTION_FAILED");
+    return createTemplateOutput(dataRows, customerName);
+
   } catch (err) {
     console.error("❌ Excel extraction failed:", err);
     return createEmptyResult("EXCEL_EXTRACTION_FAILED");
   }
 }
 
-function findHeaderRow(rows) {
-  const keywords = ["item", "product", "qty", "quantity", "code", "sap", "order", "name"];
-
-  for (let i = 0; i < Math.min(rows.length, 50); i++) {
-    const row = rows[i].map(c => normalizeKey(c || ""));
-    
-    if (row.every(cell => !cell)) continue;
-
-    if (row.some(c => c === "product") && row.some(c => c.includes("quantity"))) {
-      return i;
-    }
-
-    const hasCompany = row.some(c => c.includes("company"));
-    const hasDivision = row.some(c => c.includes("division"));
-    const hasItemOrQty = row.some(c => c.includes("item") || c.includes("qty"));
-    
-    if (hasCompany && hasDivision && hasItemOrQty) {
-      return i;
-    }
-
-    const matches = row.filter(cell => 
-      keywords.some(kw => cell.includes(kw))
-    );
-    
-    if (matches.length >= 3) {
-      return i;
-    }
-
-    if (matches.length >= 2) {
-      const hasCore = row.some(c => c.includes("itemdesc") || c.includes("orderqty"));
-      if (hasCore) return i;
-    }
-
-    if (row.length <= 3 && 
-        row.some(c => c.includes("item") || c.includes("product")) &&
-        row.some(c => c.includes("qty") || c.includes("quantity"))) {
-      return i;
-    }
-  }
-
-  return -1;
-}
-
-function createColumnMapping(headers) {
-  const mapping = {
-    sapcode: "",
-    itemdesc: "",
-    orderqty: "",
-    dvn: ""
-  };
-
-  const aliases = {
-    sapcode: ["sapcode", "sap", "code", "itemcode", "item code", "product code"],
-    itemdesc: ["itemdesc", "item name", "product name", "product", "description", "desc", "medicine", "name"],
-    orderqty: ["orderqty", "order qty", "qty", "quantity"],
-    dvn: ["dvn", "division", "div", "company"]
-  };
-
-  headers.forEach((header, index) => {
-    const normalized = normalizeKey(header);
-    
-    Object.entries(aliases).forEach(([target, keywords]) => {
-      if (keywords.some(kw => normalized === kw || normalized.includes(kw))) {
-        if (!mapping[target]) {
-          mapping[target] = header;
-        }
-      }
-    });
-  });
-
-  return mapping;
-}
-
-/* ========================================================================
-   TEXT PARSER
-======================================================================== */
-
+// --- TEXT HANDLER ---
 export async function extractOrderText(file) {
   try {
-    if (!file?.buffer) {
-      return createEmptyResult("EMPTY_FILE");
-    }
+     const text = file.buffer.toString("utf8");
+     const lines = text.split(/\r?\n/);
+     const customerName = extractCustomerName(lines);
+     
+     const dataRows = [];
+     let currentDVN = "";
 
-    const text = file.buffer.toString("utf8");
-    const lines = text.split(/\r?\n/).map(l => clean(l)).filter(Boolean);
+     for (const line of lines) {
+        const cleanLine = clean(line);
+        if (!cleanLine) continue;
 
-    const customerName = extractCustomerName(lines);
-    const dataRows = [];
-
-    let state = "OUTSIDE_TABLE";
-
-    for (const line of lines) {
-    if (state === "OUTSIDE_TABLE") {
-  const isHeader =
-    /(sl\s*no|s\.?no|sr\s*no)/i.test(line) ||
-    /(item|product|description|particulars)/i.test(line) &&
-    /(qty|quantity|nos|pcs|order)/i.test(line);
-
-  const looksLikeDataRow =
-    /^\d{4,7}\s+[A-Za-z]/.test(line) ||
-    /^[A-Za-z].*\s+\d+$/.test(line);
-
-  if (isHeader || looksLikeDataRow) {
-    state = "INSIDE_TABLE";
-    pendingSAPCode = null;
-    pendingItemDesc = null;
-  }
-}
-
-
-      if (state !== "INSIDE_TABLE") continue;
-
-      if (/(total\s*value|net\s*value|despatch|dispatch|authorised|authorized|signatory)/i.test(line)) {
-        break;
-      }
-
-      if (isNoiseKeyword(line)) continue;
-
-      const product = parseProductLineTokens(line);
-
-      if (product && product.itemdesc && product.orderqty) {
-        const cleanDesc = product.itemdesc.replace(/[*\s-]/g, "");
-        if (cleanDesc.length >= 3) {
-          dataRows.push([customerName, product.sapcode, product.itemdesc, product.orderqty, ""]);
+        if (isDivisionLine(cleanLine)) {
+            currentDVN = cleanLine;
+            continue;
         }
-      }
-    }
 
-    return createTemplateOutput(dataRows, customerName);
+        const row = parseRowFormatted(cleanLine);
+        if (row) {
+            dataRows.push([
+                customerName,
+                row.sapcode,
+                row.itemdesc,
+                row.orderqty,
+                currentDVN
+            ]);
+        }
+     }
+     
+     return createTemplateOutput(dataRows, customerName);
 
   } catch (err) {
-    console.error("❌ TXT extraction failed:", err);
-    return createEmptyResult("TXT_EXTRACTION_FAILED");
+      return createEmptyResult("TXT_EXTRACTION_FAILED");
   }
 }
 
 /* ========================================================================
-   TEMPLATE OUTPUT
-======================================================================== */
+   5. OUTPUT GENERATOR
+   ======================================================================== */
 
 function createTemplateOutput(dataRows, customerName) {
   const templateRows = dataRows.map(row => {
@@ -601,19 +551,15 @@ function createTemplateOutput(dataRows, customerName) {
 
 function createExtractedFieldsMetadata(dataRows) {
   if (!dataRows.length) return [];
-
   const sample = dataRows[0];
-
-  return [
-    { id: "code", fieldName: "Code", sampleValue: sample["CODE"] || "", autoMapped: "CODE", confidence: "high" },
-    { id: "customer", fieldName: "Customer Name", sampleValue: sample["CUSTOMER NAME"] || "", autoMapped: "CUSTOMER NAME", confidence: "high" },
-    { id: "sapcode", fieldName: "SAP Code", sampleValue: sample["SAPCODE"] || "", autoMapped: "SAPCODE", confidence: sample["SAPCODE"] ? "high" : "medium" },
-    { id: "itemdesc", fieldName: "Item Description", sampleValue: sample["ITEMDESC"] || "", autoMapped: "ITEMDESC", confidence: "high" },
-    { id: "orderqty", fieldName: "Order Quantity", sampleValue: String(sample["ORDERQTY"] || 0), autoMapped: "ORDERQTY", confidence: "high" },
-    { id: "boxpack", fieldName: "Box Pack", sampleValue: String(sample["BOX PACK"] || 0), autoMapped: "BOX PACK", confidence: "medium" },
-    { id: "pack", fieldName: "Pack", sampleValue: String(sample["PACK"] || 0), autoMapped: "PACK", confidence: "medium" },
-    { id: "dvn", fieldName: "Division", sampleValue: sample["DVN"] || "", autoMapped: "DVN", confidence: "medium" }
-  ];
+  // Basic metadata generation
+  return Object.keys(sample).map(key => ({
+    id: key.toLowerCase(),
+    fieldName: key,
+    sampleValue: String(sample[key] || ""),
+    autoMapped: key,
+    confidence: "high"
+  }));
 }
 
 function createEmptyResult(error = null) {
@@ -627,8 +573,8 @@ function createEmptyResult(error = null) {
 }
 
 /* ========================================================================
-   UNIFIED ENTRY POINT
-======================================================================== */
+   MAIN ENTRY POINT
+   ======================================================================== */
 
 export async function unifiedExtract(file) {
   if (!file?.buffer) return createEmptyResult("EMPTY_FILE");
