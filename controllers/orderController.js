@@ -9,6 +9,7 @@ import XLSX from "xlsx";
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
+;
 import { getTrainingColumns } from "../services/trainingTemplate.js";
 import { normalizeKey } from "../utils/normalizeKey.js";
 import { unifiedExtract } from "../services/unifiedParser.js";
@@ -397,9 +398,9 @@ export const getOrderHistory = async (req, res) => {
   res.json({
     success: true,
     history: history.map(item => ({
-      id: item._id,
+      id: item._id.toString(), // ✅ Convert ObjectId to string
       fileName: item.fileName,
-      uploadDate: item.createdAt,
+      uploadDate: new Date(item.createdAt).toLocaleString(), // ✅ Format date
       status: item.status,
       recordsProcessed: item.recordsProcessed || 0,
       recordsFailed: item.recordsFailed || 0,
@@ -411,43 +412,115 @@ export const getOrderHistory = async (req, res) => {
 
 export const downloadConvertedFile = async (req, res, next) => {
   try {
+    console.log("📥 Download request for ID:", req.params.id);
+    console.log("👤 User ID:", req.user.id);
+
     const upload = await OrderUpload.findOne({
       _id: req.params.id,
       userId: req.user.id,
-      status: "CONVERTED"
     });
 
-    if (!upload || !upload.outputFile) {
+    if (!upload) {
+      console.log("❌ Upload not found");
       return res.status(404).json({
         success: false,
-        message: "File not found"
+        message: "Order not found or unauthorized",
       });
     }
 
-    const filePath = path.resolve("uploads", upload.outputFile);
+    console.log("✅ Upload found, status:", upload.status);
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
+    if (upload.status !== "CONVERTED") {
+      return res.status(400).json({
         success: false,
-        message: "File missing on server"
+        message: `File is not ready for download. Current status: ${upload.status}`,
       });
     }
 
+    // Try to serve the saved file from disk first
+    if (upload.outputFile) {
+      const filePath = path.join("uploads", upload.outputFile);
+      
+      if (fs.existsSync(filePath)) {
+        console.log("📂 Serving file from disk:", filePath);
+        
+        res.setHeader(
+          "Content-Type",
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        );
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${upload.fileName.replace(/\.[^/.]+$/, "")}-converted.xlsx"`
+        );
+        
+        return res.sendFile(path.resolve(filePath));
+      }
+    }
+
+    // Fallback: regenerate from convertedData if file doesn't exist
+    if (!upload.convertedData || !upload.convertedData.rows || upload.convertedData.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No converted data available",
+      });
+    }
+
+    console.log("🔄 Regenerating Excel file from database");
+
+    const workbook = XLSX.utils.book_new();
+    
+    const headers = upload.convertedData.headers || [
+      "CODE", "CUSTOMER NAME", "SAPCODE", "ITEMDESC", 
+      "ORDERQTY", "BOX PACK", "PACK", "DVN"
+    ];
+    const rows = upload.convertedData.rows;
+
+    // Convert row objects to array format for Excel
+    const excelRows = rows.map(row => 
+      headers.map(header => row[header] || "")
+    );
+
+    const sheet = XLSX.utils.aoa_to_sheet([
+      headers,
+      ...excelRows
+    ]);
+
+    // Set column widths
+    sheet["!cols"] = [
+      { wch: 10 },  // CODE
+      { wch: 30 },  // CUSTOMER NAME
+      { wch: 12 },  // SAPCODE
+      { wch: 50 },  // ITEMDESC
+      { wch: 12 },  // ORDERQTY
+      { wch: 12 },  // BOX PACK
+      { wch: 10 },  // PACK
+      { wch: 15 }   // DVN
+    ];
+
+    XLSX.utils.book_append_sheet(workbook, sheet, "Order Training");
+
+    // Set response headers
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     );
-
     res.setHeader(
       "Content-Disposition",
       `attachment; filename="${upload.fileName.replace(/\.[^/.]+$/, "")}-converted.xlsx"`
     );
 
-    res.sendFile(filePath);
+    // Write directly to response
+    const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+    res.send(buffer);
+
+    console.log("✅ Download completed");
+
   } catch (err) {
+    console.error("❌ Download error:", err);
     next(err);
   }
 };
+
 
 export const getOrderResult = async (req, res) => {
   const upload = await OrderUpload.findOne({

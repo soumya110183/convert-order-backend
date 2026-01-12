@@ -15,31 +15,18 @@ const router = express.Router();
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 10 * 1024 * 1024 },
 });
 
-/* ----------- EXTRACT ----------- */
-router.post(
-  "/extract",
-  protect,
-  upload.single("file"), 
-  extractOrderFields
-);
-
-/* ----------- CONVERT ----------- */
+// POST routes
+router.post("/extract", protect, upload.single("file"), extractOrderFields);
 router.post("/convert", protect, convertOrders);
 
-/* ----------- HISTORY ----------- */
+// GET routes - ORDER MATTERS!
 router.get("/history", protect, getOrderHistory);
-
-router.get("/download/:id", protect, downloadConvertedFile);
-router.get("/result/:id", protect, getOrderResult);
 router.get("/template", protect, getOrderTemplate);
-router.get(
-  "/:id",
-  protect,
-  getOrderById
-);
-
+router.get("/download/:id", protect, downloadConvertedFile);  // BEFORE /:id
+router.get("/result/:id", protect, getOrderResult);            // BEFORE /:id
+router.get("/:id", protect, getOrderById);                     // LAST!
 
 export default router;
