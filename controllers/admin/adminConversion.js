@@ -23,12 +23,32 @@ export const exportAllConvertedData = async (req, res) => {
       .sort({ customerName: 1, itemdesc: 1 })
       .lean();
 
-    if (!masterOrders.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No converted data available in master database"
-      });
-    }
+if (!masterOrders.length) {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["NO DATA AVAILABLE"],
+    ["Please upload and convert orders first"]
+  ]);
+
+  XLSX.utils.book_append_sheet(wb, ws, "Info");
+
+  const buffer = XLSX.write(wb, {
+    type: "buffer",
+    bookType: "xlsx"
+  });
+
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader(
+    "Content-Disposition",
+    'attachment; filename="pharma_orders_empty.xlsx"'
+  );
+
+  return res.send(buffer);
+}
+
 
     console.log(`📊 Found ${masterOrders.length} unique orders in master DB`);
 
