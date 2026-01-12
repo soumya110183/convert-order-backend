@@ -1,9 +1,3 @@
-import User from "../../models/User.js";
-import OrderUpload from "../../models/orderUpload.js";
-import MappingRule from "../../models/mappingRules.js";
-import SystemAlert from "../../models/systemAlerts.js";
-import ActivityLog from "../../models/activityLogs.js";
-
 export const getAdminDashboard = async (req, res) => {
   const [
     totalUsers,
@@ -11,6 +5,7 @@ export const getAdminDashboard = async (req, res) => {
     admins,
     totalUploads,
     failedUploads,
+    successfulUploads,
     mappingRules,
     alerts,
     recentActivity,
@@ -20,15 +15,14 @@ export const getAdminDashboard = async (req, res) => {
     User.countDocuments({ isActive: true }),
     User.countDocuments({ role: "admin" }),
 
-    // 🔥 uploads instead of conversions
     OrderUpload.countDocuments(),
     OrderUpload.countDocuments({ status: "FAILED" }),
+    OrderUpload.countDocuments({ status: "CONVERTED" }),
 
     MappingRule.countDocuments(),
-    SystemAlert.find().sort({ createdAt: -1 }).limit(5),
-    ActivityLog.find().sort({ createdAt: -1 }).limit(10),
+    SystemAlert.find().sort({ createdAt: -1 }).limit(5).lean(),
+    ActivityLog.find().sort({ createdAt: -1 }).limit(10).lean(),
 
-    // 🔥 THIS IS WHAT YOU ARE MISSING
     OrderUpload.find()
       .sort({ createdAt: -1 })
       .limit(10)
@@ -39,7 +33,7 @@ export const getAdminDashboard = async (req, res) => {
   const successRate =
     totalUploads === 0
       ? 100
-      : (((totalUploads - failedUploads) / totalUploads) * 100).toFixed(1);
+      : ((successfulUploads / totalUploads) * 100).toFixed(1);
 
   res.json({
     stats: {
@@ -48,11 +42,12 @@ export const getAdminDashboard = async (req, res) => {
       admins,
       totalUploads,
       failedUploads,
+      successfulUploads,
       successRate,
     },
     mappingRules,
     alerts,
     recentActivity,
-    recentUploads, // ✅ NEW
+    recentUploads,
   });
 };

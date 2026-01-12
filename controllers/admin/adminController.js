@@ -47,3 +47,33 @@ export const getMappingRules = async (req, res) => {
   const rules = await MappingRule.find().sort({ updatedAt: -1 });
   res.json({ success: true, rules });
 };
+
+export const getRecentUploadsPaginated = async (req, res) => {
+  const page = Math.max(parseInt(req.query.page) || 1, 1);
+  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
+  const skip = (page - 1) * limit;
+
+  const [total, uploads] = await Promise.all([
+    OrderUpload.countDocuments(),
+    OrderUpload.find()
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .select(
+        "fileName userEmail status recordsProcessed recordsFailed createdAt"
+      )
+      .lean(),
+  ]);
+
+  res.json({
+    data: uploads,
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      hasNext: skip + uploads.length < total,
+      hasPrev: page > 1,
+    },
+  });
+};
