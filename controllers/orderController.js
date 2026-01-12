@@ -1,19 +1,14 @@
 /**
  * PRODUCTION CONTROLLER - PHARMA ORDER PROCESSING
- * Enforces strict 8-column template compliance
+ * Fixed: Works with existing schema (no dedupKey field needed)
  */
 
 import OrderUpload from "../models/orderUpload.js";
-
 import XLSX from "xlsx";
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
-
 import MasterOrder from "../models/masterOrder.js";
-
-;
-import { getTrainingColumns } from "../services/trainingTemplate.js";
 import { normalizeKey } from "../utils/normalizeKey.js";
 import { unifiedExtract } from "../services/unifiedParser.js";
 
@@ -28,9 +23,8 @@ const TEMPLATE_COLUMNS = [
   "DVN"
 ];
 
-
 /* ========================================================================
-   EXTRACT ENDPOINT - Always Re-extracts
+   EXTRACT ENDPOINT - Enhanced Error Handling
 ======================================================================== */
 
 export const extractOrderFields = async (req, res, next) => {
@@ -55,22 +49,46 @@ export const extractOrderFields = async (req, res, next) => {
       .update(file.buffer)
       .digest("hex");
 
-    // Extract using unified parser
-    const extractionResult = await unifiedExtract(file);
+    // Extract using unified parser with better error context
+    let extractionResult;
+    try {
+      extractionResult = await unifiedExtract(file);
+    } catch (parseError) {
+      console.error("❌ Parser error:", parseError);
+      return res.status(422).json({
+        success: false,
+        code: "PARSER_ERROR",
+        message: "Failed to parse file. Please ensure it's a valid Excel/PDF/Text file with a clear table structure.",
+        extractedFields: [],
+        hint: "The file should contain columns like: Item/Product Name, Quantity, SAP Code, etc."
+      });
+    }
 
     if (!extractionResult) {
       return res.status(400).json({
         success: false,
-        message: "Unsupported file format"
+        code: "UNSUPPORTED_FORMAT",
+        message: "Unsupported file format. Please upload Excel (.xlsx, .xls), PDF, or Text files.",
+        extractedFields: []
       });
     }
 
     if (extractionResult.error) {
+      const errorMessages = {
+        "TABLE_HEADER_NOT_FOUND": "Could not find a valid table header in the file. Please ensure your file has column headers like 'Item Name', 'Quantity', 'Product', etc.",
+        "NO_DATA_ROWS": "No data rows found in the file. The file appears to be empty.",
+        "EMPTY_FILE": "The uploaded file is empty or corrupted.",
+        "PDF_EXTRACTION_FAILED": "Failed to extract text from PDF. The PDF might be scanned or image-based.",
+        "EXCEL_EXTRACTION_FAILED": "Failed to read Excel file. The file might be corrupted.",
+        "TXT_EXTRACTION_FAILED": "Failed to read text file. The file might be corrupted or in an unsupported encoding."
+      };
+
       return res.status(422).json({
         success: false,
         code: extractionResult.error,
-        message: "Extraction failed",
-        extractedFields: []
+        message: errorMessages[extractionResult.error] || "Extraction failed",
+        extractedFields: [],
+        hint: "Try: 1) Ensure the file has clear column headers, 2) Check if data is in a table format, 3) For PDFs, ensure text is selectable (not scanned images)"
       });
     }
 
@@ -79,8 +97,9 @@ export const extractOrderFields = async (req, res, next) => {
       return res.status(422).json({
         success: false,
         code: "EMPTY_EXTRACTION",
-        message: "No valid data extracted from file",
-        extractedFields: []
+        message: "No valid data extracted from file. Please check your file format and data structure.",
+        extractedFields: [],
+        hint: "Make sure your file contains: 1) A clear header row, 2) At least one data row, 3) Item descriptions and quantities"
       });
     }
 
@@ -114,7 +133,6 @@ export const extractOrderFields = async (req, res, next) => {
       uploadId: upload._id,
       rows: extractionResult.dataRows.length
     });
-    
 
     res.json({
       success: true,
@@ -129,23 +147,21 @@ export const extractOrderFields = async (req, res, next) => {
 };
 
 /* ========================================================================
-   CONVERT ENDPOINT - Template Enforcement
+   CONVERT ENDPOINT - Fixed Deduplication (Uses Existing Index)
 ======================================================================== */
 
 export const convertOrders = async (req, res, next) => {
   const startTime = Date.now();
 
   try {
- const { uploadId } = req.body;
+    const { uploadId } = req.body;
 
-if (!uploadId) {
-  return res.status(400).json({
-    success: false,
-    message: "uploadId is required"
-  });
-}
-
-     
+    if (!uploadId) {
+      return res.status(400).json({
+        success: false,
+        message: "uploadId is required"
+      });
+    }
 
     const upload = await OrderUpload.findOne({
       _id: uploadId,
@@ -280,60 +296,166 @@ if (!uploadId) {
     };
     upload.rowErrors = rowErrors;
     upload.rowWarnings = rowWarnings;
-    upload.processingTime = Date.now() - startTime;
+    upload.processingTimeMs = Date.now() - startTime;
 
     await upload.save();
 
     console.log("✅ Conversion completed successfully");
-// ===============================
-// UPDATE MASTER (DEDUPLICATED DB)
-// ===============================
 
-for (const row of outputRows) {
-  const customerName = row["CUSTOMER NAME"];
-  const itemdesc = row["ITEMDESC"];
+    // ===============================
+    // DEDUPLICATE WITHIN SAME UPLOAD
+    // ===============================
+    const dedupedMap = new Map();
 
-  await MasterOrder.updateOne(
-    { customerName, itemdesc },   // ✅ compound key
-    {
-      $setOnInsert: {
-        customerName,
-        itemdesc,
-        code: row["CODE"] || "",
-        sapcode: row["SAPCODE"] || "",
-        dvn: row["DVN"] || "",
-        pack: row["PACK"] || 0,
-        boxPack: row["BOX PACK"] || 0,
-      },
+    for (const row of outputRows) {
+      // Create a normalized key for deduplication
+      const key = `${String(row["CUSTOMER NAME"]).toLowerCase().trim()}||${String(row["ITEMDESC"]).toLowerCase().trim()}`;
 
-      $inc: {
-        orderqty: row["ORDERQTY"],
-        uploadCount: 1,
-      },
+      if (!dedupedMap.has(key)) {
+        dedupedMap.set(key, { ...row });
+      } else {
+        // Merge quantities for duplicates
+        dedupedMap.get(key).ORDERQTY += row["ORDERQTY"];
+      }
+    }
 
-      $addToSet: {
-        sourceUploads: upload._id,
-      },
+    const dedupedRows = Array.from(dedupedMap.values());
 
-      $set: {
-        lastUploadId: upload._id,
-        lastUpdatedAt: new Date(),
-      },
-    },
-    { upsert: true }
-  );
-}
+    console.log(`📝 Updating master database with ${dedupedRows.length} deduplicated rows...`);
+
+    // ===============================
+    // UPDATE MASTER DATABASE
+    // Using existing unique index on (customerName, itemdesc)
+    // ===============================
+    let masterUpdates = 0;
+    let masterErrors = 0;
+
+    for (const row of dedupedRows) {
+      const customerName = String(row["CUSTOMER NAME"] || "").trim();
+      const itemdesc = String(row["ITEMDESC"] || "").trim();
+
+      if (!customerName || !itemdesc) {
+        console.warn("⚠️ Skipping row with empty customer name or item description");
+        continue;
+      }
+
+      try {
+        const result = await MasterOrder.updateOne(
+          {
+            customerName: customerName,
+            itemdesc: itemdesc,
+          },
+          {
+            $setOnInsert: {
+              customerName: customerName,
+              itemdesc: itemdesc,
+              code: row["CODE"] || "",
+              sapcode: row["SAPCODE"] || "",
+              dvn: row["DVN"] || "",
+              pack: row["PACK"] || 0,
+              boxPack: row["BOX PACK"] || 0,
+              uploadCount: 0, // Will be incremented below
+              orderqty: 0, // Will be incremented below
+              sourceUploads: [],
+              lastUpdatedAt: new Date(),
+            },
+            $inc: {
+              orderqty: row["ORDERQTY"],
+              uploadCount: 1,
+            },
+            $addToSet: {
+              sourceUploads: upload._id,
+            },
+            $set: {
+              lastUploadId: upload._id,
+              lastUpdatedAt: new Date(),
+            },
+          },
+          { upsert: true }
+        );
+
+        masterUpdates++;
+
+        if (masterUpdates % 50 === 0) {
+          console.log(`📝 Updated ${masterUpdates}/${dedupedRows.length} master records...`);
+        }
+
+      } catch (dbError) {
+        masterErrors++;
+        console.error("❌ Master update error:", {
+          customerName,
+          itemdesc,
+          error: dbError.message,
+          code: dbError.code
+        });
+
+        // Handle duplicate key errors gracefully
+        if (dbError.code === 11000) {
+          console.warn(`⚠️ Duplicate detected, attempting merge...`);
+          
+          try {
+            // Try a simple increment instead
+            await MasterOrder.updateOne(
+              { customerName, itemdesc },
+              {
+                $inc: {
+                  orderqty: row["ORDERQTY"],
+                  uploadCount: 1,
+                },
+                $addToSet: {
+                  sourceUploads: upload._id,
+                },
+                $set: {
+                  lastUploadId: upload._id,
+                  lastUpdatedAt: new Date(),
+                },
+              }
+            );
+            console.log("✅ Merged successfully");
+            masterUpdates++;
+          } catch (retryError) {
+            console.error("❌ Merge failed:", retryError.message);
+            rowWarnings.push({
+              field: "DATABASE",
+              warning: `Failed to update master for: ${itemdesc}`,
+              error: retryError.message
+            });
+          }
+        } else {
+          // Non-duplicate errors
+          rowWarnings.push({
+            field: "DATABASE",
+            warning: `Failed to update master database for: ${itemdesc}`,
+            error: dbError.message
+          });
+        }
+      }
+    }
+
+    console.log(`✅ Master database updated: ${masterUpdates} records, ${masterErrors} errors`);
 
     res.json({
       success: true,
       uploadId: upload._id,
       recordsProcessed: outputRows.length,
       recordsFailed: rowErrors.length,
-      warnings: rowWarnings.length
+      warnings: rowWarnings.length,
+      masterRecordsUpdated: masterUpdates
     });
 
   } catch (err) {
     console.error("❌ Conversion error:", err);
+    
+    // Provide helpful error message
+    if (err.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "Duplicate entry detected in database",
+        hint: "This might be caused by concurrent uploads. Please try again.",
+        error: err.message
+      });
+    }
+    
     next(err);
   }
 };
@@ -395,67 +517,68 @@ function styleSheet(sheet, dataRowCount) {
       if (!sheet[ref]) continue;
 
       if (R === 0) {
-        // Header row
         sheet[ref].s = headerStyle;
       } else {
-        // Data rows - alternate colors
         sheet[ref].s = (R % 2 === 0) ? cellStyle : altRowStyle;
       }
     }
   }
 
-  // Freeze header row
   sheet["!freeze"] = { xSplit: 0, ySplit: 1 };
-
-  // Add autofilter
   sheet["!autofilter"] = {
     ref: `A1:${XLSX.utils.encode_col(range.e.c)}1`
   };
-
-  // Set row heights
-  sheet["!rows"] = [{ hpt: 25 }]; // Header row height
+  sheet["!rows"] = [{ hpt: 25 }];
 }
 
 /* ========================================================================
    OTHER ENDPOINTS
 ======================================================================== */
+
 export const getOrderHistory = async (req, res) => {
-  const { search, status } = req.query;
+  try {
+    const { search, status } = req.query;
 
-  const query = { userId: req.user.id };
+    const query = { userId: req.user.id };
 
-  if (status && status !== "all") {
-    query.status = status;
+    if (status && status !== "all") {
+      query.status = status;
+    }
+
+    if (search) {
+      query.fileName = { $regex: search, $options: "i" };
+    }
+
+    const history = await OrderUpload.find(query)
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+
+    res.json({
+      success: true,
+      history: history.map(item => ({
+        id: item._id.toString(),
+        fileName: item.fileName,
+        uploadDate: item.createdAt,
+        status: item.status,
+        recordsProcessed: item.recordsProcessed || 0,
+        recordsFailed: item.recordsFailed || 0,
+        outputFile: item.outputFile || null,
+        processingTime: item.processingTimeMs || null
+      }))
+    });
+  } catch (err) {
+    console.error("❌ History error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to load history"
+    });
   }
-
-  if (search) {
-    query.fileName = { $regex: search, $options: "i" };
-  }
-
-  const history = await OrderUpload.find(query)
-    .sort({ createdAt: -1 })
-    .limit(100)
-    .lean();
-
-  res.json({
-    success: true,
-    history: history.map(item => ({
-      id: item._id.toString(),
-      fileName: item.fileName,
-      uploadDate: item.createdAt, // ✅ Send raw date, let frontend format it
-      status: item.status,
-      recordsProcessed: item.recordsProcessed || 0,
-      recordsFailed: item.recordsFailed || 0,
-      outputFile: item.outputFile || null,
-      processingTime: item.processingTime || null // ✅ Send null instead of "-"
-    }))
-  });
 };
 
 export const downloadConvertedFile = async (req, res, next) => {
   try {
     console.log("📥 Download request for ID:", req.params.id);
-    console.log("👤 User ID:", req.user.id);
 
     const upload = await OrderUpload.findOne({
       _id: req.params.id,
@@ -463,14 +586,11 @@ export const downloadConvertedFile = async (req, res, next) => {
     });
 
     if (!upload) {
-      console.log("❌ Upload not found");
       return res.status(404).json({
         success: false,
         message: "Order not found or unauthorized",
       });
     }
-
-    console.log("✅ Upload found, status:", upload.status);
 
     if (upload.status !== "CONVERTED") {
       return res.status(400).json({
@@ -479,13 +599,10 @@ export const downloadConvertedFile = async (req, res, next) => {
       });
     }
 
-    // Try to serve the saved file from disk first
     if (upload.outputFile) {
       const filePath = path.join("uploads", upload.outputFile);
       
       if (fs.existsSync(filePath)) {
-        console.log("📂 Serving file from disk:", filePath);
-        
         res.setHeader(
           "Content-Type",
           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -499,7 +616,7 @@ export const downloadConvertedFile = async (req, res, next) => {
       }
     }
 
-    // Fallback: regenerate from convertedData if file doesn't exist
+    // Fallback: regenerate from convertedData
     if (!upload.convertedData || !upload.convertedData.rows || upload.convertedData.rows.length === 0) {
       return res.status(404).json({
         success: false,
@@ -507,17 +624,11 @@ export const downloadConvertedFile = async (req, res, next) => {
       });
     }
 
-    console.log("🔄 Regenerating Excel file from database");
-
     const workbook = XLSX.utils.book_new();
     
-    const headers = upload.convertedData.headers || [
-      "CODE", "CUSTOMER NAME", "SAPCODE", "ITEMDESC", 
-      "ORDERQTY", "BOX PACK", "PACK", "DVN"
-    ];
+    const headers = upload.convertedData.headers || TEMPLATE_COLUMNS;
     const rows = upload.convertedData.rows;
 
-    // Convert row objects to array format for Excel
     const excelRows = rows.map(row => 
       headers.map(header => row[header] || "")
     );
@@ -527,21 +638,13 @@ export const downloadConvertedFile = async (req, res, next) => {
       ...excelRows
     ]);
 
-    // Set column widths
     sheet["!cols"] = [
-      { wch: 10 },  // CODE
-      { wch: 30 },  // CUSTOMER NAME
-      { wch: 12 },  // SAPCODE
-      { wch: 50 },  // ITEMDESC
-      { wch: 12 },  // ORDERQTY
-      { wch: 12 },  // BOX PACK
-      { wch: 10 },  // PACK
-      { wch: 15 }   // DVN
+      { wch: 10 }, { wch: 30 }, { wch: 12 }, { wch: 50 },
+      { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 15 }
     ];
 
     XLSX.utils.book_append_sheet(workbook, sheet, "Order Training");
 
-    // Set response headers
     res.setHeader(
       "Content-Type",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -551,11 +654,8 @@ export const downloadConvertedFile = async (req, res, next) => {
       `attachment; filename="${upload.fileName.replace(/\.[^/.]+$/, "")}-converted.xlsx"`
     );
 
-    // Write directly to response
     const buffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
     res.send(buffer);
-
-    console.log("✅ Download completed");
 
   } catch (err) {
     console.error("❌ Download error:", err);
@@ -563,30 +663,37 @@ export const downloadConvertedFile = async (req, res, next) => {
   }
 };
 
-
 export const getOrderResult = async (req, res) => {
-  const upload = await OrderUpload.findOne({
-    _id: req.params.id,
-    userId: req.user.id
-  }).lean();
+  try {
+    const upload = await OrderUpload.findOne({
+      _id: req.params.id,
+      userId: req.user.id
+    }).lean();
 
-  if (!upload) {
-    return res.status(404).json({
+    if (!upload) {
+      return res.status(404).json({
+        success: false,
+        message: "Result not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      status: upload.status,
+      recordsProcessed: upload.recordsProcessed || 0,
+      recordsFailed: upload.recordsFailed || 0,
+      warnings: upload.rowWarnings || [],
+      errors: upload.rowErrors || [],
+      outputFile: upload.outputFile,
+      processingTime: upload.processingTimeMs
+    });
+  } catch (err) {
+    console.error("❌ Result error:", err);
+    res.status(500).json({
       success: false,
-      message: "Result not found"
+      message: "Failed to load result"
     });
   }
-
-  res.json({
-    success: true,
-    status: upload.status,
-    recordsProcessed: upload.recordsProcessed || 0,
-    recordsFailed: upload.recordsFailed || 0,
-    warnings: upload.rowWarnings || [],
-    errors: upload.rowErrors || [],
-    outputFile: upload.outputFile,
-    processingTime: upload.processingTime
-  });
 };
 
 export const getOrderTemplate = async (_req, res) => {
@@ -605,25 +712,37 @@ export const getOrderTemplate = async (_req, res) => {
 };
 
 export const getOrderById = async (req, res) => {
-  const { id } = req.params;
+  try {
+    const { id } = req.params;
 
-  const order = await OrderUpload.findOne({
-    _id: id,
-    userId: req.user.id
-  }).lean();
+    const order = await OrderUpload.findOne({
+      _id: id,
+      userId: req.user.id
+    }).lean();
 
-  if (!order) {
-    return res.status(404).json({ message: "Order not found" });
+    if (!order) {
+      return res.status(404).json({ 
+        success: false,
+        message: "Order not found" 
+      });
+    }
+
+    res.json({
+      success: true,
+      id: order._id,
+      status: order.status,
+      recordsProcessed: order.recordsProcessed || 0,
+      recordsFailed: order.recordsFailed || 0,
+      rowErrors: order.rowErrors || [],
+      rowWarnings: order.rowWarnings || [],
+      processingTime: order.processingTimeMs || null,
+      outputFile: order.outputFile || null
+    });
+  } catch (err) {
+    console.error("❌ Get order error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Failed to load order"
+    });
   }
-
-  res.json({
-    id: order._id,
-    status: order.status,
-    recordsProcessed: order.recordsProcessed || 0,
-    recordsFailed: order.recordsFailed || 0,
-    rowErrors: order.rowErrors || [],
-    rowWarnings: order.rowWarnings || [],
-    processingTime: order.processingTime || "-",
-    outputFile: order.outputFile || null
-  });
 };

@@ -2,7 +2,6 @@ import mongoose from "mongoose";
 
 const masterOrderSchema = new mongoose.Schema(
   {
-
     /* ======================
        CORE BUSINESS KEYS
     ====================== */
@@ -79,9 +78,6 @@ const masterOrderSchema = new mongoose.Schema(
       },
     ],
 
-
-
-
     // Last upload that updated this row
     lastUploadId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -117,19 +113,26 @@ const masterOrderSchema = new mongoose.Schema(
 
 /* ======================
    UNIQUE DEDUP INDEX
+   ✅ This prevents duplicates based on customerName + itemdesc
 ====================== */
-
-// Prevent duplicate customer + item rows
 masterOrderSchema.index(
   { customerName: 1, itemdesc: 1 },
   { unique: true }
 );
 
+// Additional indexes for performance
+masterOrderSchema.index({ lastUpdatedAt: -1 });
+masterOrderSchema.index({ uploadCount: -1 });
 
+// Text search index for queries
+masterOrderSchema.index({
+  customerName: "text",
+  itemdesc: "text",
+  sapcode: "text",
+});
 
 /* ======================
    SAFE EXPORT
 ====================== */
-
 export default mongoose.models.MasterOrder ||
   mongoose.model("MasterOrder", masterOrderSchema);
