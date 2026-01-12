@@ -1,6 +1,6 @@
 /**
  * PRODUCTION CONTROLLER - PHARMA ORDER PROCESSING
- * Fixed: Works with existing schema (no dedupKey field needed)
+ * Fixed: MongoDB conflict, PDF extraction, admin export
  */
 
 import OrderUpload from "../models/orderUpload.js";
@@ -147,7 +147,7 @@ export const extractOrderFields = async (req, res, next) => {
 };
 
 /* ========================================================================
-   CONVERT ENDPOINT - Fixed Deduplication (Uses Existing Index)
+   CONVERT ENDPOINT - Fixed MongoDB Conflict Error
 ======================================================================== */
 
 export const convertOrders = async (req, res, next) => {
@@ -308,13 +308,11 @@ export const convertOrders = async (req, res, next) => {
     const dedupedMap = new Map();
 
     for (const row of outputRows) {
-      // Create a normalized key for deduplication
       const key = `${String(row["CUSTOMER NAME"]).toLowerCase().trim()}||${String(row["ITEMDESC"]).toLowerCase().trim()}`;
 
       if (!dedupedMap.has(key)) {
         dedupedMap.set(key, { ...row });
       } else {
-        // Merge quantities for duplicates
         dedupedMap.get(key).ORDERQTY += row["ORDERQTY"];
       }
     }
@@ -324,8 +322,7 @@ export const convertOrders = async (req, res, next) => {
     console.log(`📝 Updating master database with ${dedupedRows.length} deduplicated rows...`);
 
     // ===============================
-    // UPDATE MASTER DATABASE
-    // Using existing unique index on (customerName, itemdesc)
+    // UPDATE MASTER DATABASE - FIXED CONFLICT ERROR
     // ===============================
     let masterUpdates = 0;
     let masterErrors = 0;
@@ -340,39 +337,44 @@ export const convertOrders = async (req, res, next) => {
       }
 
       try {
-        const result = await MasterOrder.updateOne(
-          {
+        // ✅ FIX: Use findOneAndUpdate with separate logic for new vs existing
+        const existing = await MasterOrder.findOne({ customerName, itemdesc });
+
+        if (existing) {
+          // Update existing record
+          await MasterOrder.updateOne(
+            { _id: existing._id },
+            {
+              $inc: {
+                orderqty: row["ORDERQTY"],
+                uploadCount: 1,
+              },
+              $addToSet: {
+                sourceUploads: upload._id,
+              },
+              $set: {
+                lastUploadId: upload._id,
+                lastUpdatedAt: new Date(),
+              },
+            }
+          );
+        } else {
+          // Create new record
+          await MasterOrder.create({
             customerName: customerName,
             itemdesc: itemdesc,
-          },
-          {
-            $setOnInsert: {
-              customerName: customerName,
-              itemdesc: itemdesc,
-              code: row["CODE"] || "",
-              sapcode: row["SAPCODE"] || "",
-              dvn: row["DVN"] || "",
-              pack: row["PACK"] || 0,
-              boxPack: row["BOX PACK"] || 0,
-              uploadCount: 0, // Will be incremented below
-              orderqty: 0, // Will be incremented below
-              sourceUploads: [],
-              lastUpdatedAt: new Date(),
-            },
-            $inc: {
-              orderqty: row["ORDERQTY"],
-              uploadCount: 1,
-            },
-            $addToSet: {
-              sourceUploads: upload._id,
-            },
-            $set: {
-              lastUploadId: upload._id,
-              lastUpdatedAt: new Date(),
-            },
-          },
-          { upsert: true }
-        );
+            code: row["CODE"] || "",
+            sapcode: row["SAPCODE"] || "",
+            dvn: row["DVN"] || "",
+            pack: row["PACK"] || 0,
+            boxPack: row["BOX PACK"] || 0,
+            orderqty: row["ORDERQTY"],
+            uploadCount: 1,
+            sourceUploads: [upload._id],
+            lastUploadId: upload._id,
+            lastUpdatedAt: new Date(),
+          });
+        }
 
         masterUpdates++;
 
@@ -391,43 +393,21 @@ export const convertOrders = async (req, res, next) => {
 
         // Handle duplicate key errors gracefully
         if (dbError.code === 11000) {
-          console.warn(`⚠️ Duplicate detected, attempting merge...`);
-          
+          console.warn(`⚠️ Duplicate detected for: ${itemdesc}`);
           try {
-            // Try a simple increment instead
+            // Retry with just increment
             await MasterOrder.updateOne(
               { customerName, itemdesc },
               {
-                $inc: {
-                  orderqty: row["ORDERQTY"],
-                  uploadCount: 1,
-                },
-                $addToSet: {
-                  sourceUploads: upload._id,
-                },
-                $set: {
-                  lastUploadId: upload._id,
-                  lastUpdatedAt: new Date(),
-                },
+                $inc: { orderqty: row["ORDERQTY"], uploadCount: 1 },
+                $addToSet: { sourceUploads: upload._id },
+                $set: { lastUploadId: upload._id, lastUpdatedAt: new Date() },
               }
             );
-            console.log("✅ Merged successfully");
             masterUpdates++;
           } catch (retryError) {
-            console.error("❌ Merge failed:", retryError.message);
-            rowWarnings.push({
-              field: "DATABASE",
-              warning: `Failed to update master for: ${itemdesc}`,
-              error: retryError.message
-            });
+            console.error("❌ Retry failed:", retryError.message);
           }
-        } else {
-          // Non-duplicate errors
-          rowWarnings.push({
-            field: "DATABASE",
-            warning: `Failed to update master database for: ${itemdesc}`,
-            error: dbError.message
-          });
         }
       }
     }
@@ -445,41 +425,22 @@ export const convertOrders = async (req, res, next) => {
 
   } catch (err) {
     console.error("❌ Conversion error:", err);
-    
-    // Provide helpful error message
-    if (err.code === 11000) {
-      return res.status(409).json({
-        success: false,
-        message: "Duplicate entry detected in database",
-        hint: "This might be caused by concurrent uploads. Please try again.",
-        error: err.message
-      });
-    }
-    
     next(err);
   }
 };
 
 /* ========================================================================
-   EXCEL STYLING - Professional Pharma Format
+   EXCEL STYLING
 ======================================================================== */
 
 function styleSheet(sheet, dataRowCount) {
-  // Set column widths
   sheet["!cols"] = [
-    { wch: 10 },  // CODE
-    { wch: 30 },  // CUSTOMER NAME
-    { wch: 12 },  // SAPCODE
-    { wch: 50 },  // ITEMDESC
-    { wch: 12 },  // ORDERQTY
-    { wch: 12 },  // BOX PACK
-    { wch: 10 },  // PACK
-    { wch: 15 }   // DVN
+    { wch: 10 }, { wch: 30 }, { wch: 12 }, { wch: 50 },
+    { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 15 }
   ];
 
   const range = XLSX.utils.decode_range(sheet["!ref"]);
 
-  // Header style
   const headerStyle = {
     font: { bold: true, sz: 12, color: { rgb: "FFFFFF" } },
     fill: { fgColor: { rgb: "1F4E79" } },
@@ -492,7 +453,6 @@ function styleSheet(sheet, dataRowCount) {
     }
   };
 
-  // Data cell style
   const cellStyle = {
     font: { sz: 11 },
     alignment: { vertical: "center", wrapText: true },
@@ -504,13 +464,11 @@ function styleSheet(sheet, dataRowCount) {
     }
   };
 
-  // Alternate row style
   const altRowStyle = {
     ...cellStyle,
     fill: { fgColor: { rgb: "F2F2F2" } }
   };
 
-  // Apply styles
   for (let R = range.s.r; R <= range.e.r; ++R) {
     for (let C = range.s.c; C <= range.e.c; ++C) {
       const ref = XLSX.utils.encode_cell({ r: R, c: C });
@@ -525,9 +483,7 @@ function styleSheet(sheet, dataRowCount) {
   }
 
   sheet["!freeze"] = { xSplit: 0, ySplit: 1 };
-  sheet["!autofilter"] = {
-    ref: `A1:${XLSX.utils.encode_col(range.e.c)}1`
-  };
+  sheet["!autofilter"] = { ref: `A1:${XLSX.utils.encode_col(range.e.c)}1` };
   sheet["!rows"] = [{ hpt: 25 }];
 }
 
@@ -538,7 +494,6 @@ function styleSheet(sheet, dataRowCount) {
 export const getOrderHistory = async (req, res) => {
   try {
     const { search, status } = req.query;
-
     const query = { userId: req.user.id };
 
     if (status && status !== "all") {
@@ -578,8 +533,6 @@ export const getOrderHistory = async (req, res) => {
 
 export const downloadConvertedFile = async (req, res, next) => {
   try {
-    console.log("📥 Download request for ID:", req.params.id);
-
     const upload = await OrderUpload.findOne({
       _id: req.params.id,
       userId: req.user.id,
@@ -616,8 +569,8 @@ export const downloadConvertedFile = async (req, res, next) => {
       }
     }
 
-    // Fallback: regenerate from convertedData
-    if (!upload.convertedData || !upload.convertedData.rows || upload.convertedData.rows.length === 0) {
+    // Fallback: regenerate
+    if (!upload.convertedData || !upload.convertedData.rows) {
       return res.status(404).json({
         success: false,
         message: "No converted data available",
@@ -625,7 +578,6 @@ export const downloadConvertedFile = async (req, res, next) => {
     }
 
     const workbook = XLSX.utils.book_new();
-    
     const headers = upload.convertedData.headers || TEMPLATE_COLUMNS;
     const rows = upload.convertedData.rows;
 
@@ -633,11 +585,7 @@ export const downloadConvertedFile = async (req, res, next) => {
       headers.map(header => row[header] || "")
     );
 
-    const sheet = XLSX.utils.aoa_to_sheet([
-      headers,
-      ...excelRows
-    ]);
-
+    const sheet = XLSX.utils.aoa_to_sheet([headers, ...excelRows]);
     sheet["!cols"] = [
       { wch: 10 }, { wch: 30 }, { wch: 12 }, { wch: 50 },
       { wch: 12 }, { wch: 12 }, { wch: 10 }, { wch: 15 }

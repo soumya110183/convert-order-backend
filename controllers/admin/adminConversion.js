@@ -1,10 +1,21 @@
 /**
  * ADMIN EXPORT CONTROLLER
- * Exports all converted orders from Master Database (already deduplicated)
+ * Exports all converted orders in the exact 8-column template format
  */
 
 import MasterOrder from "../../models/masterOrder.js";
 import XLSX from "xlsx";
+
+const TEMPLATE_COLUMNS = [
+  "CODE",
+  "CUSTOMER NAME",
+  "SAPCODE",
+  "ITEMDESC",
+  "ORDERQTY",
+  "BOX PACK",
+  "PACK",
+  "DVN"
+];
 
 export const exportAllConvertedData = async (req, res) => {
   try {
@@ -18,41 +29,40 @@ export const exportAllConvertedData = async (req, res) => {
 
     console.log("📥 Admin export initiated by:", req.user.email);
 
-    // 1️⃣ Fetch ALL orders from Master DB (already deduplicated!)
+    // Fetch ALL orders from Master DB (already deduplicated)
     const masterOrders = await MasterOrder.find()
       .sort({ customerName: 1, itemdesc: 1 })
       .lean();
 
-if (!masterOrders.length) {
-  const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.aoa_to_sheet([
-    ["NO DATA AVAILABLE"],
-    ["Please upload and convert orders first"]
-  ]);
+    if (!masterOrders.length) {
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet([
+        ["NO DATA AVAILABLE"],
+        ["Please upload and convert orders first"]
+      ]);
 
-  XLSX.utils.book_append_sheet(wb, ws, "Info");
+      XLSX.utils.book_append_sheet(wb, ws, "Info");
 
-  const buffer = XLSX.write(wb, {
-    type: "buffer",
-    bookType: "xlsx"
-  });
+      const buffer = XLSX.write(wb, {
+        type: "buffer",
+        bookType: "xlsx"
+      });
 
-  res.setHeader(
-    "Content-Type",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  );
-  res.setHeader(
-    "Content-Disposition",
-    'attachment; filename="pharma_orders_empty.xlsx"'
-  );
+      res.setHeader(
+        "Content-Type",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      );
+      res.setHeader(
+        "Content-Disposition",
+        'attachment; filename="pharma_orders_empty.xlsx"'
+      );
 
-  return res.send(buffer);
-}
-
+      return res.send(buffer);
+    }
 
     console.log(`📊 Found ${masterOrders.length} unique orders in master DB`);
 
-    // 2️⃣ Transform to template format
+    // ✅ Transform to EXACT template format (8 columns only)
     const exportRows = masterOrders.map(order => ({
       "CODE": order.code || "",
       "CUSTOMER NAME": order.customerName || "",
@@ -61,32 +71,18 @@ if (!masterOrders.length) {
       "ORDERQTY": order.orderqty || 0,
       "BOX PACK": order.boxPack || 0,
       "PACK": order.pack || 0,
-      "DVN": order.dvn || "",
-      "UPLOAD COUNT": order.uploadCount || 1,
-      "LAST UPDATED": order.lastUpdatedAt 
-        ? new Date(order.lastUpdatedAt).toLocaleDateString()
-        : ""
+      "DVN": order.dvn || ""
     }));
 
-    // 3️⃣ Create Excel workbook
+    // Create Excel workbook
     const workbook = XLSX.utils.book_new();
 
+    // ✅ Use EXACT template columns (no extra columns)
     const worksheet = XLSX.utils.json_to_sheet(exportRows, {
-      header: [
-        "CODE",
-        "CUSTOMER NAME",
-        "SAPCODE",
-        "ITEMDESC",
-        "ORDERQTY",
-        "BOX PACK",
-        "PACK",
-        "DVN",
-        "UPLOAD COUNT",
-        "LAST UPDATED"
-      ]
+      header: TEMPLATE_COLUMNS
     });
 
-    // Apply column widths
+    // Apply column widths (exact same as user downloads)
     worksheet["!cols"] = [
       { wch: 10 },  // CODE
       { wch: 30 },  // CUSTOMER NAME
@@ -95,14 +91,40 @@ if (!masterOrders.length) {
       { wch: 12 },  // ORDERQTY
       { wch: 12 },  // BOX PACK
       { wch: 10 },  // PACK
-      { wch: 20 },  // DVN
-      { wch: 12 },  // UPLOAD COUNT
-      { wch: 15 }   // LAST UPDATED
+      { wch: 15 }   // DVN
     ];
 
-    // Apply styling
+    // Apply professional styling (exact same as user downloads)
     const range = XLSX.utils.decode_range(worksheet["!ref"]);
     
+    const headerStyle = {
+      font: { bold: true, sz: 12, color: { rgb: "FFFFFF" } },
+      fill: { fgColor: { rgb: "1F4E79" } },
+      alignment: { horizontal: "center", vertical: "center", wrapText: true },
+      border: {
+        top: { style: "medium", color: { rgb: "000000" } },
+        bottom: { style: "medium", color: { rgb: "000000" } },
+        left: { style: "thin", color: { rgb: "000000" } },
+        right: { style: "thin", color: { rgb: "000000" } }
+      }
+    };
+
+    const cellStyle = {
+      font: { sz: 11 },
+      alignment: { vertical: "center", wrapText: true },
+      border: {
+        top: { style: "thin", color: { rgb: "CCCCCC" } },
+        bottom: { style: "thin", color: { rgb: "CCCCCC" } },
+        left: { style: "thin", color: { rgb: "CCCCCC" } },
+        right: { style: "thin", color: { rgb: "CCCCCC" } }
+      }
+    };
+
+    const altRowStyle = {
+      ...cellStyle,
+      fill: { fgColor: { rgb: "F2F2F2" } }
+    };
+
     for (let R = range.s.r; R <= range.e.r; ++R) {
       for (let C = range.s.c; C <= range.e.c; ++C) {
         const cellRef = XLSX.utils.encode_cell({ r: R, c: C });
@@ -110,32 +132,10 @@ if (!masterOrders.length) {
 
         if (R === 0) {
           // Header row
-          worksheet[cellRef].s = {
-            font: { bold: true, sz: 12, color: { rgb: "FFFFFF" } },
-            fill: { fgColor: { rgb: "1F4E79" } },
-            alignment: { horizontal: "center", vertical: "center" },
-            border: {
-              top: { style: "medium" },
-              bottom: { style: "medium" },
-              left: { style: "thin" },
-              right: { style: "thin" }
-            }
-          };
+          worksheet[cellRef].s = headerStyle;
         } else {
-          // Data rows
-          worksheet[cellRef].s = {
-            font: { sz: 11 },
-            alignment: { vertical: "center" },
-            border: {
-              top: { style: "thin", color: { rgb: "CCCCCC" } },
-              bottom: { style: "thin", color: { rgb: "CCCCCC" } },
-              left: { style: "thin", color: { rgb: "CCCCCC" } },
-              right: { style: "thin", color: { rgb: "CCCCCC" } }
-            },
-            fill: R % 2 === 0 
-              ? { fgColor: { rgb: "FFFFFF" } }
-              : { fgColor: { rgb: "F2F2F2" } }
-          };
+          // Data rows with alternating colors
+          worksheet[cellRef].s = (R % 2 === 0) ? cellStyle : altRowStyle;
         }
       }
     }
@@ -148,19 +148,22 @@ if (!masterOrders.length) {
       ref: `A1:${XLSX.utils.encode_col(range.e.c)}1`
     };
 
+    // Set row heights
+    worksheet["!rows"] = [{ hpt: 25 }];
+
     XLSX.utils.book_append_sheet(
       workbook,
       worksheet,
-      "All Converted Orders"
+      "Order Training"  // ✅ Same sheet name as user downloads
     );
 
-    // 4️⃣ Generate Excel buffer (NO filesystem)
+    // Generate Excel buffer
     const buffer = XLSX.write(workbook, {
       type: "buffer",
       bookType: "xlsx"
     });
 
-    // 5️⃣ Stream to admin
+    // Send to admin
     const timestamp = new Date().toISOString().split('T')[0];
     const filename = `pharma_orders_master_${timestamp}.xlsx`;
 
@@ -200,6 +203,7 @@ export const getMasterStats = async (req, res) => {
       totalOrders,
       totalCustomers,
       totalProducts,
+      totalQuantity,
       recentOrders,
       topCustomers,
       topProducts
@@ -209,6 +213,10 @@ export const getMasterStats = async (req, res) => {
       MasterOrder.distinct("customerName").then(arr => arr.length),
       
       MasterOrder.distinct("itemdesc").then(arr => arr.length),
+      
+      MasterOrder.aggregate([
+        { $group: { _id: null, total: { $sum: "$orderqty" } } }
+      ]).then(result => result[0]?.total || 0),
       
       MasterOrder.find()
         .sort({ lastUpdatedAt: -1 })
@@ -220,17 +228,20 @@ export const getMasterStats = async (req, res) => {
         {
           $group: {
             _id: "$customerName",
+            totalQty: { $sum: "$orderqty" },
             totalOrders: { $sum: "$uploadCount" },
             uniqueProducts: { $addToSet: "$itemdesc" }
           }
         },
-        { $project: {
+        { 
+          $project: {
             customer: "$_id",
+            totalQty: 1,
             totalOrders: 1,
             uniqueProducts: { $size: "$uniqueProducts" }
           }
         },
-        { $sort: { totalOrders: -1 } },
+        { $sort: { totalQty: -1 } },
         { $limit: 10 }
       ]),
       
@@ -242,7 +253,8 @@ export const getMasterStats = async (req, res) => {
             uploadCount: { $sum: "$uploadCount" }
           }
         },
-        { $project: {
+        { 
+          $project: {
             product: "$_id",
             totalQty: 1,
             uploadCount: 1
@@ -259,6 +271,7 @@ export const getMasterStats = async (req, res) => {
         totalOrders,
         totalCustomers,
         totalProducts,
+        totalQuantity,
       },
       recentOrders,
       topCustomers,
@@ -267,6 +280,9 @@ export const getMasterStats = async (req, res) => {
 
   } catch (err) {
     console.error("❌ Master stats error:", err);
-    res.status(500).json({ message: "Failed to load statistics" });
+    res.status(500).json({ 
+      success: false,
+      message: "Failed to load statistics" 
+    });
   }
 };
