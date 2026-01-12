@@ -28,13 +28,14 @@ export const getUserDashboard = async (req, res, next) => {
         failedCount,
         recordsProcessed,
       },
-      recentUploads: recentUploads.map(u => ({
-        id: u._id,
-        fileName: u.fileName,
-        uploadDate: u.createdAt,
-        status: u.status === "SUCCESS" ? "Success" : "Failed",
-        recordsProcessed: u.recordsProcessed,
-      })),
+     recentUploads: recentUploads.map(u => ({
+  id: u._id,
+  fileName: u.fileName,
+  uploadDate: u.createdAt,
+  status: u.status === "CONVERTED" ? "Success" : "Failed",
+  recordsProcessed: u.recordsProcessed,
+})),
+
     });
   } catch (err) {
     next(err);
