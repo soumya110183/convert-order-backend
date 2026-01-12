@@ -27,12 +27,7 @@ const TEMPLATE_COLUMNS = [
   "PACK",
   "DVN"
 ];
-function makeDedupKey(customerName, itemdesc) {
-  return `${customerName}|${itemdesc}`
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
+
 
 /* ========================================================================
    EXTRACT ENDPOINT - Always Re-extracts
@@ -298,13 +293,10 @@ for (const row of outputRows) {
   const customerName = row["CUSTOMER NAME"];
   const itemdesc = row["ITEMDESC"];
 
-  const dedupKey = makeDedupKey(customerName, itemdesc);
-
   await MasterOrder.updateOne(
-    { dedupKey },
+    { customerName, itemdesc },   // ✅ compound key
     {
       $setOnInsert: {
-        dedupKey,
         customerName,
         itemdesc,
         code: row["CODE"] || "",
