@@ -32,7 +32,7 @@ export const getUserDashboard = async (req, res, next) => {
   id: u._id,
   fileName: u.fileName,
   uploadDate: u.createdAt,
-  status: u.status === "CONVERTED" ? "Success" : "Failed",
+  status: u.status,
   recordsProcessed: u.recordsProcessed,
 })),
 
