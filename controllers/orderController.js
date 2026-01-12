@@ -9,6 +9,9 @@ import XLSX from "xlsx";
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
+
+import MasterOrder from "../models/masterOrder.js";
+
 ;
 import { getTrainingColumns } from "../services/trainingTemplate.js";
 import { normalizeKey } from "../utils/normalizeKey.js";
@@ -24,6 +27,12 @@ const TEMPLATE_COLUMNS = [
   "PACK",
   "DVN"
 ];
+function makeDedupKey(customerName, itemdesc) {
+  return `${customerName}|${itemdesc}`
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
 /* ========================================================================
    EXTRACT ENDPOINT - Always Re-extracts
@@ -110,6 +119,7 @@ export const extractOrderFields = async (req, res, next) => {
       uploadId: upload._id,
       rows: extractionResult.dataRows.length
     });
+    
 
     res.json({
       success: true,
@@ -280,6 +290,47 @@ if (!uploadId) {
     await upload.save();
 
     console.log("✅ Conversion completed successfully");
+// ===============================
+// UPDATE MASTER (DEDUPLICATED DB)
+// ===============================
+
+for (const row of outputRows) {
+  const customerName = row["CUSTOMER NAME"];
+  const itemdesc = row["ITEMDESC"];
+
+  const dedupKey = makeDedupKey(customerName, itemdesc);
+
+  await MasterOrder.updateOne(
+    { dedupKey },
+    {
+      $setOnInsert: {
+        dedupKey,
+        customerName,
+        itemdesc,
+        code: row["CODE"] || "",
+        sapcode: row["SAPCODE"] || "",
+        dvn: row["DVN"] || "",
+        pack: row["PACK"] || 0,
+        boxPack: row["BOX PACK"] || 0,
+      },
+
+      $inc: {
+        orderqty: row["ORDERQTY"],
+        uploadCount: 1,
+      },
+
+      $addToSet: {
+        sourceUploads: upload._id,
+      },
+
+      $set: {
+        lastUploadId: upload._id,
+        lastUpdatedAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+}
 
     res.json({
       success: true,

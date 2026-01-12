@@ -28,11 +28,6 @@ export const getAdminDashboard = async (req, res) => {
     SystemAlert.find().sort({ createdAt: -1 }).limit(5).lean(),
     ActivityLog.find().sort({ createdAt: -1 }).limit(10).lean(),
 
-    OrderUpload.find()
-      .sort({ createdAt: -1 })
-      .limit(10)
-      .select("fileName userEmail status recordsProcessed recordsFailed createdAt")
-      .lean(),
   ]);
 
   const successRate =
@@ -53,6 +48,5 @@ export const getAdminDashboard = async (req, res) => {
     mappingRules,
     alerts,
     recentActivity,
-    recentUploads,
   });
 };
