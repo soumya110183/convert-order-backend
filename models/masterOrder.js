@@ -3,12 +3,6 @@ import mongoose from "mongoose";
 const masterOrderSchema = new mongoose.Schema(
   {
 
-
-    dedupKey: {
-    type: String,
-    required: true,
-    trim: true,
-  },
     /* ======================
        CORE BUSINESS KEYS
     ====================== */
@@ -126,9 +120,11 @@ const masterOrderSchema = new mongoose.Schema(
 ====================== */
 
 // Prevent duplicate customer + item rows
-masterOrderSchema.index({ dedupKey: 1 }, { unique: true });
-masterOrderSchema.index({ customerName: 1, itemdesc: 1 });
-masterOrderSchema.index({ lastUpdatedAt: -1 });
+masterOrderSchema.index(
+  { customerName: 1, itemdesc: 1 },
+  { unique: true }
+);
+
 
 
 /* ======================
