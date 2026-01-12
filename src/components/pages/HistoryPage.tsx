@@ -1,5 +1,5 @@
-import React, { useState,useEffect } from 'react';
-import { Search, Download, Eye, Filter, Calendar } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Search, Download, Eye, RefreshCw } from 'lucide-react';
 import { Card } from '../Card';
 import { Button } from '../Button';
 import { Input } from '../Input';
@@ -9,6 +9,7 @@ import { Badge } from '../Badge';
 import { Modal } from '../Modal';
 import api from '../../services/api';
 import { toast } from 'sonner';
+import { downloadOrderFile } from '../../services/orderApi';
 
 interface HistoryPageProps {
   onNavigate: (page: string) => void;
@@ -19,75 +20,54 @@ export function HistoryPage({ onNavigate }: HistoryPageProps) {
   const [statusFilter, setStatusFilter] = useState('all');
   const [selectedLog, setSelectedLog] = useState<any>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [history, setHistory] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState<string | null>(null); // Track which file is downloading
 
+  useEffect(() => {
+    const timer = setTimeout(fetchHistory, 400);
+    return () => clearTimeout(timer);
+  }, [searchTerm, statusFilter]);
 
- const [history, setHistory] = useState<any[]>([]);
-const [loading, setLoading] = useState(true);
-useEffect(() => {
-  const timer = setTimeout(fetchHistory, 400);
-  return () => clearTimeout(timer);
-}, [searchTerm, statusFilter]);
+  const fetchHistory = async () => {
+    try {
+      const res = await api.get("/orders/history", {
+        params: {
+          search: searchTerm,
+          status: statusFilter === "all" ? "all" : statusFilter.toUpperCase(),
+        },
+      });
 
+      setHistory(res.data.history);
+    } catch {
+      toast.error("Failed to load history");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-const fetchHistory = async () => {
-  try {
-    const res = await api.get("/orders/history", {
- params: {
-  search: searchTerm,
-  status: statusFilter === "all"
-    ? "all"
-    : statusFilter.toUpperCase(),
-}
-,
-});
-
-
-    console.log("HISTORY API RESPONSE 👉", res.data.history);
-
-    setHistory(res.data.history);
-  } catch {
-    toast.error("Failed to load history");
-  } finally {
-    setLoading(false);
-  }
-};
-
-
-
-const filteredData = history;
-
+  const filteredData = history;
 
   const handleViewLog = (row: any) => {
     setSelectedLog(row);
     setIsModalOpen(true);
   };
 
-const handleDownload = async (uploadId: string) => {
-  try {
-    const res = await api.get(
-      `/orders/download/${uploadId}`,
-      { responseType: "blob" }
-    );
+  // Same download function as ResultPage
+  const handleDownload = async (uploadId: string) => {
+    if (!uploadId) return;
 
-    const blob = new Blob([res.data], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    });
-
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "converted_orders.xlsx";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
-  } catch (err) {
-    toast.error("Download failed");
-  }
-};
-
-
-
+    try {
+      setDownloading(uploadId);
+      await downloadOrderFile(uploadId);
+      toast.success("File downloaded successfully");
+    } catch (err: any) {
+      console.error("Download error:", err);
+      toast.error("Failed to download file");
+    } finally {
+      setDownloading(null);
+    }
+  };
 
   const columns = [
     { key: 'fileName', label: 'File Name' },
@@ -95,28 +75,26 @@ const handleDownload = async (uploadId: string) => {
     {
       key: 'status',
       label: 'Status',
- render: (value: string) => (
-  <Badge
-    variant={
-      value === "CONVERTED"
-        ? "success"
-        : value === "FAILED"
-        ? "error"
-        : "neutral"
-    }
-  >
-    {value}
-  </Badge>
-)
-
+      render: (value: string) => (
+        <Badge
+          variant={
+            value === "CONVERTED"
+              ? "success"
+              : value === "FAILED"
+              ? "error"
+              : "neutral"
+          }
+        >
+          {value}
+        </Badge>
+      )
     },
     {
       key: 'recordsProcessed',
       label: 'Processed',
       render: (value: number, row: any) => (
-  <span>{value} / {value + (row.recordsFailed ?? 0)}</span>
-)
-
+        <span>{value} / {value + (row.recordsFailed ?? 0)}</span>
+      )
     },
     { key: 'processingTime', label: 'Time' },
     {
@@ -134,31 +112,35 @@ const handleDownload = async (uploadId: string) => {
           >
             <Eye className="w-4 h-4" />
           </Button>
-          {row.outputFile && (
+          {row.status === "CONVERTED" && (
             <Button
               variant="ghost"
               size="sm"
               onClick={(e) => {
                 e.stopPropagation();
-               handleDownload(row.id)
-
+                handleDownload(row.id);
               }}
+              disabled={downloading === row.id}
             >
-              <Download className="w-4 h-4" />
+              {downloading === row.id ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Download className="w-4 h-4" />
+              )}
             </Button>
           )}
         </div>
       )
     },
   ];
-  if (loading) {
-  return (
-    <p className="text-neutral-600 text-center py-10">
-      Loading order history…
-    </p>
-  );
-}
 
+  if (loading) {
+    return (
+      <p className="text-neutral-600 text-center py-10">
+        Loading order history…
+      </p>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -183,16 +165,15 @@ const handleDownload = async (uploadId: string) => {
               />
             </div>
           </div>
-        <Dropdown
-  options={[
-    { value: 'all', label: 'All Status' },
-    { value: 'converted', label: 'Converted' },
-    { value: 'failed', label: 'Failed' },
-  ]}
-  value={statusFilter}
-  onChange={(e) => setStatusFilter(e.target.value)}
-/>
-
+          <Dropdown
+            options={[
+              { value: 'all', label: 'All Status' },
+              { value: 'converted', label: 'Converted' },
+              { value: 'failed', label: 'Failed' },
+            ]}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+          />
         </div>
       </Card>
 
@@ -200,8 +181,7 @@ const handleDownload = async (uploadId: string) => {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card padding="sm">
           <p className="text-sm text-neutral-600 mb-1">Total Conversions</p>
-          <p className="text-2xl font-semibold text-neutral-900">{history.length}
-</p>
+          <p className="text-2xl font-semibold text-neutral-900">{history.length}</p>
         </Card>
         <Card padding="sm">
           <p className="text-sm text-neutral-600 mb-1">Successful</p>
@@ -229,8 +209,7 @@ const handleDownload = async (uploadId: string) => {
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-neutral-900">Conversion History</h3>
             <div className="text-sm text-neutral-600">
-              Showing {filteredData.length} of {history.length}
- conversions
+              Showing {filteredData.length} of {history.length} conversions
             </div>
           </div>
         </div>
@@ -266,10 +245,9 @@ const handleDownload = async (uploadId: string) => {
               </div>
               <div>
                 <p className="text-sm text-neutral-600 mb-1">Status</p>
-               <Badge variant={selectedLog.status === "CONVERTED" ? "success" : "error"}>
-  {selectedLog.status === "CONVERTED" ? "Success" : "Failed"}
-</Badge>
-
+                <Badge variant={selectedLog.status === "CONVERTED" ? "success" : "error"}>
+                  {selectedLog.status === "CONVERTED" ? "Success" : "Failed"}
+                </Badge>
               </div>
               <div>
                 <p className="text-sm text-neutral-600 mb-1">Upload Date</p>
@@ -286,25 +264,36 @@ const handleDownload = async (uploadId: string) => {
               <div>
                 <p className="text-sm text-neutral-600 mb-1">Records Failed</p>
                 <p className="font-medium text-neutral-900">
-  {selectedLog.recordsFailed ?? 0}
-</p>
-
+                  {selectedLog.recordsFailed ?? 0}
+                </p>
               </div>
             </div>
 
-            {selectedLog.outputFile && (
+            {selectedLog.status === "CONVERTED" && (
               <div className="pt-4 border-t border-neutral-200">
                 <p className="text-sm text-neutral-600 mb-2">Output File</p>
                 <div className="flex items-center justify-between p-3 bg-neutral-50 rounded-lg border border-neutral-200">
-                  <p className="font-mono text-sm text-neutral-900">{selectedLog.outputFile}</p>
+                  <p className="font-mono text-sm text-neutral-900">
+                    {selectedLog.fileName.replace(/\.[^/.]+$/, "")}-converted.xlsx
+                  </p>
                   <Button
                     variant="primary"
                     size="sm"
-                   onClick={() => handleDownload(selectedLog.id)}
-
+                    onClick={() => handleDownload(selectedLog.id)}
+                    disabled={downloading === selectedLog.id}
+                    className="inline-flex items-center gap-2"
                   >
-                    <Download className="w-4 h-4" />
-                    Download
+                    {downloading === selectedLog.id ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" />
+                        Downloading...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        Download
+                      </>
+                    )}
                   </Button>
                 </div>
               </div>
