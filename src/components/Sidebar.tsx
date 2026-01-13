@@ -37,7 +37,7 @@ export function Sidebar({
 
   const adminMenuItems = [
     { to: "/admin", label: "Dashboard", icon: LayoutDashboard },
-    { to: "/admin/mapping-rules", label: "Mapping Rules", icon: Map },
+    // { to: "/admin/mapping-rules", label: "Mapping Rules", icon: Map },
     { to: "/admin/users", label: "User Access", icon: Users },
   ];
 

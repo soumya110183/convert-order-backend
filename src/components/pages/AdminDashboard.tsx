@@ -225,7 +225,7 @@ const activityColumns = [
 
 
       {/* Alerts */}
-      <Card>
+      {/* <Card>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-lg font-semibold">System Alerts</h3>
           <Badge variant="error">
@@ -262,7 +262,7 @@ const activityColumns = [
             </div>
           ))}
         </div>
-      </Card>
+      </Card> */}
 
       {/* Quick Access */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
