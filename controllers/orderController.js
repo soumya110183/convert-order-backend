@@ -1,10 +1,12 @@
 /**
- * PRODUCTION CONTROLLER - FINAL VERSION
- * Zero data loss, atomic operations, comprehensive error handling
+ * PRODUCTION CONTROLLER v3.0 - BUSINESS RULES ALIGNED
+ * - Customer Aggregation
+ * - Box Pack Rounding
+ * - No MasterOrder Persistence
  */
 
 import OrderUpload from "../models/orderUpload.js";
-import MasterOrder from "../models/masterOrder.js";
+import CustomerMaster from "../models/customerMaster.js"; // Updated import
 import XLSX from "xlsx";
 import crypto from "crypto";
 import path from "path";
@@ -17,32 +19,48 @@ const TEMPLATE_COLUMNS = [
 ];
 
 /* ========================================================================
-   UTILITIES
+   ENHANCED UTILITIES
 ======================================================================== */
 
 function extractPackSize(desc) {
   if (!desc) return 0;
   
   const patterns = [
-    /\((\d+)['\s]*s\)/gi,
-    /\b(\d+)['\s]*s\b/gi,
-    /\*(\d+)/g,
-    /\b(\d+)\s*(?:tab|cap)/gi
+    { regex: /\((\d+)['"`\s]*(?:S|TAB|CAP|ML|GM|MG)\)/gi, priority: 10 },
+    { regex: /\b(\d+)['"`\s]*S\b/gi, priority: 9 },
+    { regex: /\bX\s*(\d+)\b/gi, priority: 8 },
+    { regex: /\*(\d+)\b/g, priority: 7 },
+    { regex: /\b(\d+)\s*(?:TABS?|TABLETS?)\b/gi, priority: 6 },
+    { regex: /\b(\d+)\s*(?:CAPS?|CAPSULES?)\b/gi, priority: 6 },
+    { regex: /\/(\d+)\b/g, priority: 5 },
+    { regex: /\b(\d+)\s*(?:ML|GM?|MG|MCG)\b/gi, priority: 4 },
   ];
   
   const matches = [];
-  patterns.forEach(p => {
-    const m = desc.matchAll(p);
-    for (const match of m) {
-      const n = parseInt(match[1], 10);
-      if (n > 0 && n <= 2000) matches.push(n);
+  
+  for (const { regex, priority } of patterns) {
+    const pattern = new RegExp(regex.source, regex.flags);
+    let match;
+    
+    while ((match = pattern.exec(desc)) !== null) {
+      const num = parseInt(match[1], 10);
+      if (num > 0 && num <= 2000) {
+        matches.push({ value: num, priority });
+      }
     }
-  });
+  }
   
   if (!matches.length) return 0;
   
+  // Sort by priority
+  matches.sort((a, b) => b.priority - a.priority);
+  
+  const topPriority = matches[0].priority;
+  const topMatches = matches.filter(m => m.priority === topPriority);
+  
+  // Get most frequent
   const freq = {};
-  matches.forEach(m => freq[m] = (freq[m] || 0) + 1);
+  topMatches.forEach(m => freq[m.value] = (freq[m.value] || 0) + 1);
   const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);
   
   return parseInt(sorted[0][0], 10);
@@ -50,7 +68,8 @@ function extractPackSize(desc) {
 
 function calcBoxPack(qty, pack) {
   if (!qty || !pack || pack === 0) return 0;
-  return Math.floor(qty / pack);
+  // RULE 4: Always round to nearest integer using Math.round()
+  return Math.round(qty / pack);
 }
 
 function validateRow(row, idx) {
@@ -62,7 +81,7 @@ function validateRow(row, idx) {
     errors.push({
       row: idx + 2,
       field: "ITEMDESC",
-      message: "Missing item description"
+      message: "Missing or invalid item description"
     });
     return { row, errors, warnings };
   }
@@ -73,12 +92,12 @@ function validateRow(row, idx) {
     errors.push({
       row: idx + 2,
       field: "ORDERQTY",
-      message: "Invalid quantity"
+      message: `Invalid quantity: ${row.ORDERQTY}`
     });
     return { row, errors, warnings };
   }
   
-  // Extract/calculate PACK
+  // Extract/validate PACK
   let pack = Number(row.PACK) || 0;
   if (pack === 0) {
     pack = extractPackSize(row.ITEMDESC);
@@ -87,24 +106,32 @@ function validateRow(row, idx) {
       warnings.push({
         row: idx + 2,
         field: "PACK",
-        message: `Auto-extracted: ${pack}`
+        message: `Auto-extracted pack size: ${pack}`
+      });
+    } else {
+      warnings.push({
+        row: idx + 2,
+        field: "PACK",
+        message: "Could not determine pack size"
       });
     }
   }
   
-  // Calculate/validate BOX PACK
+  // Validate/calculate BOX PACK
   let box = Number(row["BOX PACK"]) || 0;
   if (pack > 0 && qty > 0) {
     const expected = calcBoxPack(qty, pack);
     if (box !== expected) {
+      const oldBox = box;
       row["BOX PACK"] = expected;
-      if (box > 0) {
+      
+      if (oldBox > 0 && Math.abs(oldBox - expected) > 1) {
         warnings.push({
           row: idx + 2,
           field: "BOX PACK",
-          message: `Corrected: ${expected} (was ${box})`
+          message: `Corrected: ${expected} (was ${oldBox})`
         });
-      } else {
+      } else if (oldBox === 0) {
         warnings.push({
           row: idx + 2,
           field: "BOX PACK",
@@ -112,6 +139,24 @@ function validateRow(row, idx) {
         });
       }
     }
+  }
+  
+  // Validate CUSTOMER NAME
+  if (!row["CUSTOMER NAME"] || row["CUSTOMER NAME"] === "UNKNOWN CUSTOMER") {
+    warnings.push({
+      row: idx + 2,
+      field: "CUSTOMER NAME",
+      message: "Customer name not identified"
+    });
+  }
+  
+  // Validate CODE and SAPCODE (shouldn't be identical)
+  if (row.CODE && row.SAPCODE && row.CODE === row.SAPCODE) {
+    warnings.push({
+      row: idx + 2,
+      field: "SAPCODE",
+      message: "SAP code same as item code - check if correct"
+    });
   }
   
   return { row, errors, warnings };
@@ -181,7 +226,7 @@ export const extractOrderFields = async (req, res, next) => {
     }
     
     const file = req.file;
-    console.log(`📦 File: ${file.originalname} (${file.size} bytes)`);
+    console.log(`📦 Processing: ${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`);
     
     const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
     
@@ -193,18 +238,19 @@ export const extractOrderFields = async (req, res, next) => {
       console.error("❌ Parser error:", err);
       return res.status(422).json({
         success: false,
-        message: "Failed to parse file. Please check file format.",
-        error: "PARSER_ERROR"
+        message: "Failed to parse file. Please check file format and try again.",
+        error: "PARSER_ERROR",
+        details: err.message
       });
     }
     
     if (!result || result.error) {
       const errorMsgs = {
-        PDF_EXTRACTION_FAILED: "Failed to extract PDF text",
-        EXCEL_EXTRACTION_FAILED: "Failed to read Excel file",
-        TXT_EXTRACTION_FAILED: "Failed to read text file",
-        EMPTY_FILE: "File is empty",
-        UNSUPPORTED_FORMAT: "Unsupported file format"
+        PDF_EXTRACTION_FAILED: "Failed to extract text from PDF. File may be corrupted or image-based.",
+        EXCEL_EXTRACTION_FAILED: "Failed to read Excel file. Check if file is valid .xls/.xlsx format.",
+        TXT_EXTRACTION_FAILED: "Failed to read text file. Check file encoding.",
+        EMPTY_FILE: "File contains no data or is empty.",
+        UNSUPPORTED_FORMAT: "File format not supported. Please upload PDF, Excel, or Text files."
       };
       
       return res.status(422).json({
@@ -217,12 +263,12 @@ export const extractOrderFields = async (req, res, next) => {
     if (!result.dataRows || result.dataRows.length === 0) {
       return res.status(422).json({
         success: false,
-        message: "No data rows found in file",
+        message: "No order data found in file. Please check if file contains valid order information.",
         error: "NO_DATA"
       });
     }
     
-    // Save upload
+    // Save or update upload record
     let upload = await OrderUpload.findOne({ fileHash, userId: req.user.id });
     
     if (!upload) {
@@ -235,34 +281,39 @@ export const extractOrderFields = async (req, res, next) => {
         status: "EXTRACTED",
         extractedData: result
       });
+      console.log(`✅ New upload created: ${upload._id}`);
     } else {
       upload.status = "EXTRACTED";
       upload.extractedData = result;
       upload.recordsProcessed = 0;
       upload.recordsFailed = 0;
       upload.outputFile = null;
+      upload.rowErrors = [];
+      upload.rowWarnings = [];
       await upload.save();
+      console.log(`✅ Upload updated: ${upload._id}`);
     }
     
-    console.log(`✅ Extracted ${result.dataRows.length} rows`);
+    console.log(`✅ Extracted ${result.dataRows.length} rows from ${file.originalname}`);
     
     res.json({
       success: true,
       uploadId: upload._id,
       extractedFields: result.extractedFields,
       dataRows: result.dataRows,
-      rowCount: result.dataRows.length
+      rowCount: result.dataRows.length,
+      customerName: result.meta?.customerName || "UNKNOWN"
     });
     
   } catch (err) {
-    console.error("❌ Extract error:", err);
+    console.error("❌ Extract endpoint error:", err);
     next(err);
   }
 };
 
 /* ========================================================================
    CONVERT ENDPOINT
-======================================================================== */
+   ======================================================================== */
 
 export const convertOrders = async (req, res, next) => {
   const { uploadId, editedRows } = req.body;
@@ -272,7 +323,7 @@ export const convertOrders = async (req, res, next) => {
     if (!uploadId) {
       return res.status(400).json({
         success: false,
-        message: "uploadId required"
+        message: "uploadId is required"
       });
     }
     
@@ -284,7 +335,7 @@ export const convertOrders = async (req, res, next) => {
     if (!upload) {
       return res.status(404).json({
         success: false,
-        message: "Upload not found"
+        message: "Upload not found or you don't have permission to access it"
       });
     }
     
@@ -293,48 +344,121 @@ export const convertOrders = async (req, res, next) => {
       ? editedRows
       : upload.extractedData.dataRows;
     
-    console.log(`🔄 Converting ${sourceRows.length} rows...`);
+    console.log(`🔄 Converting ${sourceRows.length} rows for upload ${uploadId}...`);
     
     const output = [];
     const allErrors = [];
     const allWarnings = [];
     
+    // Aggregation Map: CustomerName -> { code, quantity }
+    const customerAggregation = new Map();
+
     // Validate and enrich each row
-    sourceRows.forEach((row, idx) => {
+    const fallbackCustomerName = meta?.customerName || "UNKNOWN CUSTOMER";
+
+    for (let idx = 0; idx < sourceRows.length; idx++) {
+      const row = sourceRows[idx];
       const { row: validated, errors, warnings } = validateRow(row, idx);
       
       if (errors.length > 0) {
         allErrors.push(...errors);
-        return;
+        console.log(`❌ Row ${idx + 2} validation failed:`, errors[0].message);
+        continue; // Skip validation failed rows
       }
       
       if (warnings.length > 0) {
         allWarnings.push(...warnings);
       }
       
+      // Effective Customer Name
+      const custName = validated["CUSTOMER NAME"] || fallbackCustomerName;
+      const custCode = validated.CODE || "";
+
+      // Aggregate Logic
+      const orderQty = Number(validated.ORDERQTY);
+      if (customerAggregation.has(custName)) {
+        const entry = customerAggregation.get(custName);
+        entry.quantity += orderQty;
+        if (!entry.code && custCode) entry.code = custCode; // Capture code if missing
+      } else {
+        customerAggregation.set(custName, {
+          code: custCode,
+          quantity: orderQty
+        });
+      }
+      
       output.push({
-        "CODE": validated.CODE || "",
-        "CUSTOMER NAME": validated["CUSTOMER NAME"] || meta.customerName || "UNKNOWN",
+        "CODE": custCode,
+        "CUSTOMER NAME": custName,
         "SAPCODE": validated.SAPCODE || "",
         "ITEMDESC": validated.ITEMDESC,
-        "ORDERQTY": Number(validated.ORDERQTY),
+        "ORDERQTY": orderQty,
         "BOX PACK": Number(validated["BOX PACK"]) || 0,
         "PACK": Number(validated.PACK) || 0,
         "DVN": validated.DVN || ""
       });
-    });
+    }
     
-    console.log(`📊 Valid: ${output.length}, Errors: ${allErrors.length}, Warnings: ${allWarnings.length}`);
+    console.log(`📊 Validation complete: ${output.length} valid, ${allErrors.length} errors, ${allWarnings.length} warnings`);
     
     if (output.length === 0) {
       return res.status(400).json({
         success: false,
-        message: "No valid rows",
+        message: "No valid rows after validation. Please check errors and try again.",
         errors: allErrors
       });
     }
     
-    // Create Excel
+    // ---------------------------------------------------------
+    // RULE 3 & 5: AGGREGATE UPDATE to CustomerMaster
+    // ---------------------------------------------------------
+    const bulkOps = [];
+    for (const [name, data] of customerAggregation) {
+      // If code is missing, we use name as fallback for search, but creation requires code?
+      // Rule says: "Order quantity must be added to the correct customer using: customerCode (preferred), fallback to customerName"
+      // "If customer does not exist: auto-create customer with available data."
+
+      // If we don't have a code, we can't strictly enforce unique customerCode efficiently without generating one.
+      // Assuming for now if code is missing, we skip or use a placeholder? 
+      // Actually, let's try to find by Name if Code is missing.
+      
+      const filter = {};
+      if (data.code) {
+        filter.customerCode = data.code;
+      } else {
+        filter.customerName = name;
+      }
+
+      const update = { 
+        $inc: { totalOrderQty: data.quantity },
+        $setOnInsert: { 
+          customerName: name,
+          // If creating new and we have a code, use it. If not, we might fail/warn?
+          // Let's assume we use what we have. If code is missing, it might violate unique constraint if we use empty string.
+          // We will set customerCode to Name if missing to prevent error, or generate a hash.
+          customerCode: data.code || `AUTO-${crypto.randomBytes(4).toString('hex').toUpperCase()}` 
+        }
+      };
+      
+      // If we found by code, we might want to ensure name is set if missing in DB? Not strictly required by update logic.
+      
+      bulkOps.push({
+        updateOne: {
+          filter,
+          update,
+          upsert: true
+        }
+      });
+    }
+
+    if (bulkOps.length > 0) {
+      console.log(`💾 Updating ${bulkOps.length} customers in Master...`);
+      await CustomerMaster.bulkWrite(bulkOps);
+    }
+
+    // ---------------------------------------------------------
+    // EXCEL GENERATION (Display Logic)
+    // ---------------------------------------------------------
     const wb = XLSX.utils.book_new();
     const excelRows = output.map(r => [
       r.CODE, r["CUSTOMER NAME"], r.SAPCODE, r.ITEMDESC,
@@ -351,7 +475,9 @@ export const convertOrders = async (req, res, next) => {
     const filePath = path.join("uploads", fileName);
     XLSX.writeFile(wb, filePath);
     
-    // Update upload
+    console.log(`💾 Excel file saved: ${fileName}`);
+    
+    // Update upload record
     upload.status = "CONVERTED";
     upload.recordsProcessed = output.length;
     upload.recordsFailed = allErrors.length;
@@ -362,19 +488,19 @@ export const convertOrders = async (req, res, next) => {
     upload.processingTimeMs = Date.now() - start;
     await upload.save();
     
-    // Update master database
-    await updateMasterDatabase(output, upload._id);
+    console.log(`✅ Conversion complete in ${upload.processingTimeMs}ms`);
     
     res.json({
       success: true,
       uploadId: upload._id,
       recordsProcessed: output.length,
       recordsFailed: allErrors.length,
-      warnings: allWarnings.length
+      warnings: allWarnings.length,
+      processingTime: upload.processingTimeMs
     });
     
   } catch (err) {
-    console.error("❌ Convert error:", err);
+    console.error("❌ Convert endpoint error:", err);
     next(err);
   }
 };
@@ -383,173 +509,12 @@ export const convertOrders = async (req, res, next) => {
    MASTER DATABASE UPDATE (Atomic, Deduplicated)
 ======================================================================== */
 
-async function updateMasterDatabase(rows, uploadId) {
-  // Deduplicate within upload
-  const dedupMap = new Map();
-  
-  rows.forEach(row => {
-    const key = `${row["CUSTOMER NAME"].toLowerCase()}||${row.ITEMDESC.toLowerCase()}`;
-    
-    if (!dedupMap.has(key)) {
-      dedupMap.set(key, { ...row });
-    } else {
-      const existing = dedupMap.get(key);
-      existing.ORDERQTY += row.ORDERQTY;
-      
-      // Recalc box pack
-      if (existing.PACK > 0) {
-        existing["BOX PACK"] = calcBoxPack(existing.ORDERQTY, existing.PACK);
-      }
-    }
-  });
-  
-  const uniqueRows = Array.from(dedupMap.values());
-  console.log(`📝 Updating master: ${uniqueRows.length} unique items`);
-  
-  let updated = 0;
-  let errors = 0;
-  
-  for (const row of uniqueRows) {
-    const customer = row["CUSTOMER NAME"].trim().toUpperCase();
-    const item = row.ITEMDESC.trim().toUpperCase();
-    
-    if (!customer || !item) continue;
-    
-    // Generate dedup key
-    const dedupKey = crypto
-      .createHash("md5")
-      .update(`${customer}||${item}`)
-      .digest("hex");
-    
-    try {
-      // Atomic upsert
-      await MasterOrder.findOneAndUpdate(
-        { dedupKey },
-        {
-          $setOnInsert: {
-            customerName: customer,
-            itemdesc: item,
-            dedupKey,
-            code: row.CODE || "",
-            sapcode: row.SAPCODE || "",
-            dvn: row.DVN || "",
-            pack: row.PACK || 0
-          },
-          $inc: { orderqty: row.ORDERQTY, uploadCount: 1 },
-          $addToSet: { sourceUploads: uploadId },
-          $set: {
-            boxPack: row["BOX PACK"] || 0,
-            lastUploadId: uploadId,
-            lastUpdatedAt: new Date()
-          }
-        },
-        { upsert: true, new: true }
-      );
-      
-      updated++;
-      
-    } catch (err) {
-      errors++;
-      console.error(`❌ Master update failed: ${err.message}`);
-    }
-  }
-  
-  console.log(`✅ Master updated: ${updated} success, ${errors} errors`);
-}
 
 /* ========================================================================
-   ADMIN EXPORT (Deduplicated Master Data)
-======================================================================== */
-
-export const exportAllConvertedData = async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Admin only" });
-    }
-    
-    console.log(`📥 Admin export by ${req.user.email}`);
-    
-    const orders = await MasterOrder.find()
-      .sort({ customerName: 1, itemdesc: 1 })
-      .lean();
-    
-    if (!orders.length) {
-      const wb = XLSX.utils.book_new();
-      const ws = XLSX.utils.aoa_to_sheet([["NO DATA"]]);
-      XLSX.utils.book_append_sheet(wb, ws, "Info");
-      
-      const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-      
-      res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-      res.setHeader("Content-Disposition", "attachment; filename=\"pharma_empty.xlsx\"");
-      
-      return res.send(buf);
-    }
-    
-    console.log(`📊 Exporting ${orders.length} orders`);
-    
-    // Safety dedup (in-memory)
-    const finalMap = new Map();
-    
-    orders.forEach(o => {
-      const key = `${o.customerName}||${o.itemdesc}`;
-      
-      if (!finalMap.has(key)) {
-        finalMap.set(key, {
-          code: o.code || "",
-          customerName: o.customerName || "",
-          sapcode: o.sapcode || "",
-          itemdesc: o.itemdesc || "",
-          orderqty: o.orderqty || 0,
-          boxPack: o.boxPack || 0,
-          pack: o.pack || 0,
-          dvn: o.dvn || ""
-        });
-      } else {
-        const existing = finalMap.get(key);
-        existing.orderqty += (o.orderqty || 0);
-        
-        if (existing.pack > 0) {
-          existing.boxPack = calcBoxPack(existing.orderqty, existing.pack);
-        }
-      }
-    });
-    
-    const final = Array.from(finalMap.values());
-    console.log(`✅ Final: ${final.length} unique orders`);
-    
-    // Create Excel
-    const exportRows = final.map(o => ({
-      "CODE": o.code,
-      "CUSTOMER NAME": o.customerName,
-      "SAPCODE": o.sapcode,
-      "ITEMDESC": o.itemdesc,
-      "ORDERQTY": o.orderqty,
-      "BOX PACK": o.boxPack,
-      "PACK": o.pack,
-      "DVN": o.dvn
-    }));
-    
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(exportRows, { header: TEMPLATE_COLUMNS });
-    styleExcelSheet(ws);
-    XLSX.utils.book_append_sheet(wb, ws, "Order Training");
-    
-    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-    
-    const date = new Date().toISOString().split("T")[0];
-    const filename = `pharma_master_${date}.xlsx`;
-    
-    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    
-    res.send(buf);
-    
-  } catch (err) {
-    console.error("❌ Export error:", err);
-    res.status(500).json({ message: "Export failed" });
-  }
-};
+   EXPORT ALL DATA (Admin) - DELETED (Moved to adminController or removed if deprecated)
+   ======================================================================== */
+// function exportAllConvertedData removed as it relied on MasterOrder.
+// New export logic for CustomerMaster should be in adminController.
 
 /* ========================================================================
    OTHER ENDPOINTS
@@ -595,13 +560,14 @@ export const downloadConvertedFile = async (req, res, next) => {
     });
     
     if (!upload) {
-      return res.status(404).json({ message: "Not found" });
+      return res.status(404).json({ message: "Upload not found" });
     }
     
     if (upload.status !== "CONVERTED") {
-      return res.status(400).json({ message: `Not ready: ${upload.status}` });
+      return res.status(400).json({ message: `File not ready. Status: ${upload.status}` });
     }
     
+    // Try to serve existing file
     if (upload.outputFile) {
       const fp = path.join("uploads", upload.outputFile);
       
@@ -612,9 +578,9 @@ export const downloadConvertedFile = async (req, res, next) => {
       }
     }
     
-    // Fallback: regenerate
+    // Fallback: regenerate from stored data
     if (!upload.convertedData?.rows) {
-      return res.status(404).json({ message: "No data" });
+      return res.status(404).json({ message: "No converted data available" });
     }
     
     const wb = XLSX.utils.book_new();
@@ -648,7 +614,7 @@ export const getOrderResult = async (req, res) => {
     }).lean();
     
     if (!upload) {
-      return res.status(404).json({ message: "Not found" });
+      return res.status(404).json({ message: "Upload not found" });
     }
     
     res.json({
@@ -663,7 +629,7 @@ export const getOrderResult = async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Result error:", err);
-    res.status(500).json({ message: "Failed" });
+    res.status(500).json({ message: "Failed to fetch result" });
   }
 };
 
@@ -672,7 +638,7 @@ export const getOrderTemplate = async (_req, res) => {
     res.json({ success: true, columns: TEMPLATE_COLUMNS });
   } catch (err) {
     console.error("❌ Template error:", err);
-    res.status(500).json({ message: "Failed" });
+    res.status(500).json({ message: "Failed to get template" });
   }
 };
 
@@ -684,7 +650,7 @@ export const getOrderById = async (req, res) => {
     }).lean();
     
     if (!order) {
-      return res.status(404).json({ message: "Not found" });
+      return res.status(404).json({ message: "Order not found" });
     }
     
     res.json({
@@ -700,31 +666,40 @@ export const getOrderById = async (req, res) => {
     });
   } catch (err) {
     console.error("❌ Get order error:", err);
-    res.status(500).json({ message: "Failed" });
+    res.status(500).json({ message: "Failed to get order details" });
   }
 };
 
 export const getMasterStats = async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ message: "Admin only" });
+      return res.status(403).json({ message: "Admin access required" });
     }
     
-    const [total, customers, products, qty] = await Promise.all([
-      MasterOrder.countDocuments(),
-      MasterOrder.distinct("customerName").then(a => a.length),
-      MasterOrder.distinct("itemdesc").then(a => a.length),
-      MasterOrder.aggregate([
-        { $group: { _id: null, total: { $sum: "$orderqty" } } }
-      ]).then(r => r[0]?.total || 0)
+    // Using new models for stats
+    const [totalCustomers, totalProducts] = await Promise.all([
+      CustomerMaster.countDocuments(),
+      // Assuming product master is populated. If not, this might be 0 initially.
+      // If we want stats from audit logs, we'd query OrderUpload, but requirement implies looking at Masters.
+      mongoose.models.ProductMaster ? mongoose.models.ProductMaster.countDocuments() : 0
     ]);
     
+    // Total Quantity from Customer Master aggregation
+    const qtyResult = await CustomerMaster.aggregate([
+      { $group: { _id: null, total: { $sum: "$totalOrderQty" } } }
+    ]);
+    const totalQuantity = qtyResult[0]?.total || 0;
+
     res.json({
       success: true,
-      stats: { totalOrders: total, totalCustomers: customers, totalProducts: products, totalQuantity: qty }
+      stats: { 
+        totalCustomers, 
+        totalProducts, 
+        totalQuantity 
+      }
     });
   } catch (err) {
     console.error("❌ Stats error:", err);
-    res.status(500).json({ message: "Failed" });
+    res.status(500).json({ message: "Failed to get statistics" });
   }
 };

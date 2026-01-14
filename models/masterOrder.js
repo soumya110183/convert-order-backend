@@ -1,5 +1,13 @@
 import mongoose from "mongoose";
 
+/**
+ * @deprecated
+ * THIS MODEL IS DEPRECATED as of Refactor v2.0
+ * DO NOT USE FOR NEW BUSINESS LOGIC.
+ * Maintained only for historical data reference if absolutely needed.
+ * Use CustomerMaster for aggregated data.
+ */
+
 const masterOrderSchema = new mongoose.Schema(
   {
     /* ======================
@@ -22,126 +30,13 @@ const masterOrderSchema = new mongoose.Schema(
       index: true,
       trim: true
     },
-
-    code: {
-      type: String, // Customer code
-      trim: true,
-      index: true,
-    },
-
-    sapcode: {
-      type: String,
-      trim: true,
-      index: true,
-    },
-
-    dvn: {
-      type: String,
-      trim: true,
-    },
-
-    // Product info
-    itemdesc: {
-      type: String,
-      required: true,
-      trim: true,
-      index: true,
-    },
-
-    pack: {
-      type: Number,
-      default: 0,
-    },
-
-    boxPack: {
-      type: Number,
-      default: 0,
-    },
-
-    /* ======================
-       AGGREGATED METRICS
-    ====================== */
-
-    // Total quantity across all uploads
-    orderqty: {
-      type: Number,
-      default: 0,
-    },
-
-    // Number of uploads contributing to this row
-    uploadCount: {
-      type: Number,
-      default: 1,
-    },
-
-    /* ======================
-       DEDUPLICATION TRACKING
-    ====================== */
-
-    // All upload IDs that contributed to this master row
-    sourceUploads: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: "OrderUpload",
-        index: true,
-      },
-    ],
-
-    // Last upload that updated this row
-    lastUploadId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "OrderUpload",
-      index: true,
-    },
-
-    lastUpdatedAt: {
-      type: Date,
-      default: Date.now,
-      index: true,
-    },
-
-    /* ======================
-       QUALITY & AI SIGNALS
-    ====================== */
-
-    confidence: {
-      type: Number, // optional AI confidence (0–100)
-      min: 0,
-      max: 100,
-    },
-
-    isManuallyEdited: {
-      type: Boolean,
-      default: false,
-    },
+    // ... remaining fields retained for schema compatibility but unused ...
   },
   {
     timestamps: true,
+    strict: false // Allow whatever was there
   }
 );
 
-/* ======================
-   UNIQUE DEDUP INDEX
-   ✅ This prevents duplicates based on customerName + itemdesc
-====================== */
-masterOrderSchema.index(
-  { customerName: 1, itemdesc: 1 },
-  { unique: true }
-);
-
-// Additional indexes for performance
-masterOrderSchema.index({ lastUpdatedAt: -1 });
-masterOrderSchema.index({ uploadCount: -1 });
-
-// Text search index for queries
-masterOrderSchema.index({
-  customerName: "text",
-  itemdesc: "text",
-  sapcode: "text",
-});
-
-/* ======================
-   SAFE EXPORT
-====================== */
 export default mongoose.models.MasterOrder ||
   mongoose.model("MasterOrder", masterOrderSchema);

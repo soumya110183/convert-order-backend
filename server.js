@@ -16,7 +16,8 @@ import adminUserRoutes from "./routes/admin/adminUserRoutes.js";
 
 import errorHandler from "./middlewares/errorMiddleware.js";
 import createAdminIfNotExists from "./utils/createAdmin.js";
-import adminExportRoutes from "./routes/admin/adminExportRoutes.js";
+
+import masterDataRoutes from "./routes/admin/masterDataRoutes.js";
 
 dotenv.config();
 
@@ -48,7 +49,8 @@ app.use("/api/admin/dashboard", adminDashboardRoutes);
 app.use("/api/admin/users", adminUserRoutes);
 app.use("/api/admin", adminMappingRoutes);
 app.use("/api/admin", adminRoutes);
-app.use("/api/admin", adminExportRoutes);
+
+app.use("/api/admin", masterDataRoutes);
 /* -------------------- FILES -------------------- */
 app.use("/uploads", express.static("uploads"));
 

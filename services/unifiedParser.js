@@ -425,7 +425,7 @@ if (inTable) {
         const boxPack = calculateBoxPack(row.qty, pack);
         
         dataRows.push([
-          row.code || "",       // CODE (first col)
+          row.productcode || "",       
           customerName,         // CUSTOMER NAME
           row.sapcode,          // SAPCODE
           row.itemdesc,         // ITEMDESC
@@ -511,10 +511,10 @@ export async function extractInvoiceExcel(file) {
     const startRow = Math.max(0, headerIdx + 1);
     
     console.log(`📊 Starting from row ${startRow + 1}`);
-    
+     let inTable = false;
     for (let i = startRow; i < rows.length; i++) {
       const row = rows[i];
-      let inTable = false;
+     
 
       // Check division (single filled cell)
       // Check division ONLY after table starts
