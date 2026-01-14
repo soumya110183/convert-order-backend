@@ -15,6 +15,7 @@ import { AdminDashboard } from "./components/pages/AdminDashboard.tsx";
 import { MappingRulesPage } from "./components/pages/MappingRulesPage.tsx";
 import { UserAccessPage } from "./components/pages/UserAccessPage.tsx";
 import ProtectedRoute from "./components/ProtectedRoutes.tsx";
+import { MasterDataPage } from "./components/pages/MasterDataPage.tsx";
 
 import { useAuth } from "./context/AuthContext.tsx";
 
@@ -133,19 +134,21 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
-            <Route
-              path="/admin/mapping-rules"
-              element={
-                <ProtectedRoute role="admin">
-                  <MappingRulesPage />
-                </ProtectedRoute>
-              }
-            />
-            <Route
-              path="/admin/users"
+          <Route
+              path="/admin/user-access"
               element={
                 <ProtectedRoute role="admin">
                   <UserAccessPage />
+                </ProtectedRoute>
+              }
+            />
+
+           
+            <Route
+              path="/admin/master-data"
+              element={
+                <ProtectedRoute role="admin">
+                  <MasterDataPage />
                 </ProtectedRoute>
               }
             />

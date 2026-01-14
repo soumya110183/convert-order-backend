@@ -38,7 +38,8 @@ export function Sidebar({
   const adminMenuItems = [
     { to: "/admin", label: "Dashboard", icon: LayoutDashboard },
     // { to: "/admin/mapping-rules", label: "Mapping Rules", icon: Map },
-    { to: "/admin/users", label: "User Access", icon: Users },
+    { to:"/admin/master-data", label: "Master Data", icon: Map },
+    { to: "/admin/user-access", label: "User Access", icon: Users },
   ];
 
   const menuItems = userRole === "admin" ? adminMenuItems : userMenuItems;

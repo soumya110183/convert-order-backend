@@ -1,303 +1,179 @@
-import React, { useState } from 'react';
-import { Upload, Download, AlertTriangle, CheckCircle, Database } from 'lucide-react';
-import { Card } from '../Card';
-import { Button } from '../Button';
-import { Badge } from '../Badge';
-import { toast } from 'sonner';
+import React, { useState } from "react";
+import { Upload, Download, AlertTriangle, CheckCircle, Database } from "lucide-react";
+import { Card } from "../Card";
+import { Button } from "../Button";
+import { Badge } from "../Badge";
+import { toast } from "sonner";
+import { masterDataApi } from "../../services/masterDataApi";
+import { CustomerTable } from "../admin/CustomerTable";
+import { ProductManagement } from "../admin/ProductManagement";
 
-interface MasterDataPageProps {
-  onNavigate: (page: string) => void;
-}
-
-export function MasterDataPage({ onNavigate }: MasterDataPageProps) {
+export function MasterDataPage() {
   const [customerFile, setCustomerFile] = useState<File | null>(null);
   const [productFile, setProductFile] = useState<File | null>(null);
-  const [uploadingCustomer, setUploadingCustomer] = useState(false);
-  const [uploadingProduct, setUploadingProduct] = useState(false);
 
-  const handleCustomerUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setCustomerFile(e.target.files[0]);
+  const [loadingCustomer, setLoadingCustomer] = useState(false);
+  const [loadingProduct, setLoadingProduct] = useState(false);
+
+  /* ===========================
+     CUSTOMER UPLOAD
+  ============================ */
+  const uploadCustomers = async () => {
+    if (!customerFile) {
+      toast.error("Please select a customer file");
+      return;
     }
-  };
 
-  const handleProductUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setProductFile(e.target.files[0]);
-    }
-  };
+    try {
+      setLoadingCustomer(true);
+      const res = await masterDataApi.uploadCustomers(customerFile);
 
-  const handleCustomerSubmit = () => {
-    if (!customerFile) return;
-    
-    setUploadingCustomer(true);
-    setTimeout(() => {
-      setUploadingCustomer(false);
-      toast.success('Customer master data uploaded successfully!');
+      toast.success(
+        `Customers uploaded: ${res.data.inserted}, Skipped: ${res.data.skipped}`
+      );
       setCustomerFile(null);
-    }, 2000);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || "Customer upload failed");
+    } finally {
+      setLoadingCustomer(false);
+    }
   };
 
-  const handleProductSubmit = () => {
-    if (!productFile) return;
-    
-    setUploadingProduct(true);
-    setTimeout(() => {
-      setUploadingProduct(false);
-      toast.success('Product master data uploaded successfully!');
+  /* ===========================
+     PRODUCT UPLOAD
+  ============================ */
+  const uploadProducts = async () => {
+    if (!productFile) {
+      toast.error("Please select a product file");
+      return;
+    }
+
+    try {
+      setLoadingProduct(true);
+      const res = await masterDataApi.uploadProducts(productFile);
+
+      toast.success(
+        `Products uploaded: ${res.data.inserted}, Skipped: ${res.data.skipped}`
+      );
       setProductFile(null);
-    }, 2000);
-  };
-
-  const handleDownloadTemplate = (type: string) => {
-    toast.success(`Downloading ${type} template...`);
+    } catch (err: any) {
+      toast.error(err.response?.data?.error || "Product upload failed");
+    } finally {
+      setLoadingProduct(false);
+    }
   };
 
   return (
     <div className="space-y-6 max-w-5xl">
-      {/* Page Header */}
+      {/* HEADER */}
       <div>
-        <h1 className="text-3xl font-bold text-neutral-900">Master Data Management</h1>
-        <p className="text-neutral-600 mt-1">Upload and manage customer and product master data</p>
+        <h1 className="text-3xl font-bold">Master Data Management</h1>
+        <p className="text-neutral-600">Admin-only customer & product master</p>
       </div>
 
-      {/* Info Banner */}
+      {/* INFO */}
       <Card>
-        <div className="flex items-start gap-3 p-4 bg-primary-50 rounded-lg border border-primary-200">
-          <Database className="w-5 h-5 text-primary-600 flex-shrink-0 mt-0.5" />
-          <div className="text-sm text-primary-900">
-            <p className="font-medium mb-1">Master Data Purpose</p>
-            <p className="text-primary-700">
-              Master data is used for validation during conversion. Customer names and product IDs in uploaded
-              files are checked against this data. Any mismatches will be flagged for review.
-            </p>
-          </div>
+        <div className="flex gap-3">
+          <Database className="w-5 h-5 text-primary-600" />
+          <p className="text-sm">
+            Used for validation and aggregation. Only ORDER QTY is updated during uploads.
+          </p>
         </div>
       </Card>
 
-      {/* Current Master Data Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card>
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-success-100 rounded-lg">
-              <CheckCircle className="w-6 h-6 text-success-600" />
-            </div>
-            <div>
-              <p className="text-sm text-neutral-600">Active Customers</p>
-              <p className="text-2xl font-semibold text-neutral-900">2,453</p>
-            </div>
-          </div>
-        </Card>
-        <Card>
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-secondary-100 rounded-lg">
-              <CheckCircle className="w-6 h-6 text-secondary-600" />
-            </div>
-            <div>
-              <p className="text-sm text-neutral-600">Active Products</p>
-              <p className="text-2xl font-semibold text-neutral-900">1,847</p>
-            </div>
-          </div>
-        </Card>
-        <Card>
-          <div className="flex items-center gap-3">
-            <div className="p-3 bg-warning-100 rounded-lg">
-              <AlertTriangle className="w-6 h-6 text-warning-600" />
-            </div>
-            <div>
-              <p className="text-sm text-neutral-600">Last Updated</p>
-              <p className="text-base font-medium text-neutral-900">Jan 2, 2026</p>
-            </div>
-          </div>
-        </Card>
-      </div>
+      {/* CUSTOMER UPLOAD */}
+   <Card>
+  <h3 className="font-semibold mb-3">Customer Master Upload</h3>
 
-      {/* Customer Master Data */}
-      <Card>
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h3 className="text-lg font-semibold text-neutral-900">Customer Master Data</h3>
-            <p className="text-sm text-neutral-600 mt-1">
-              Upload an Excel file containing customer names and IDs
-            </p>
-          </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => handleDownloadTemplate('Customer')}
-          >
-            <Download className="w-4 h-4" />
-            Download Template
-          </Button>
-        </div>
+  {/* Hidden input */}
+  <input
+    type="file"
+    accept=".xlsx,.xls"
+    id="customerFileInput"
+    className="hidden"
+    onChange={(e) => setCustomerFile(e.target.files?.[0] || null)}
+  />
 
-        {/* Upload Area */}
-        <div className="border-2 border-dashed border-neutral-300 rounded-lg p-8 text-center hover:border-primary-400 hover:bg-neutral-50 transition-all">
-          <div className="flex flex-col items-center gap-4">
-            <div className="p-4 bg-primary-100 rounded-full">
-              <Upload className="w-8 h-8 text-primary-600" />
-            </div>
-            
-            <div>
-              <p className="text-base font-medium text-neutral-900 mb-1">
-                Upload Customer Excel
-              </p>
-              <p className="text-sm text-neutral-600">
-                File must include columns: Customer ID, Customer Name
-              </p>
-            </div>
+  <div className="flex items-center gap-3">
+    {/* Select file button */}
+    <Button
+      variant="secondary"
+      onClick={() =>
+        document.getElementById("customerFileInput")?.click()
+      }
+    >
+      Select File
+    </Button>
 
-            <label className="cursor-pointer">
-              <input
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleCustomerUpload}
-                className="hidden"
-              />
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-300 text-neutral-700 rounded-lg hover:bg-neutral-50 transition-colors">
-                Select File
-              </span>
-            </label>
+    {/* Selected file */}
+    {customerFile ? (
+      <Badge variant="success">{customerFile.name}</Badge>
+    ) : (
+      <span className="text-sm text-neutral-500">
+        No file selected
+      </span>
+    )}
+  </div>
 
-            {customerFile && (
-              <div className="w-full max-w-md">
-                <div className="flex items-center justify-between p-3 bg-success-50 border border-success-200 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-5 h-5 text-success-600" />
-                    <span className="text-sm font-medium text-neutral-900">{customerFile.name}</span>
-                  </div>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={handleCustomerSubmit}
-                    isLoading={uploadingCustomer}
-                  >
-                    Upload
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+  {/* Upload button */}
+  <div className="flex justify-end mt-4">
+    <Button
+      onClick={uploadCustomers}
+      isLoading={loadingCustomer}
+      disabled={!customerFile}
+    >
+      Upload Customers
+    </Button>
+  </div>
+</Card>
 
-        {/* Validation Info */}
-        <div className="mt-4 p-4 bg-warning-50 border border-warning-200 rounded-lg">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-warning-600 flex-shrink-0 mt-0.5" />
-            <div className="text-sm text-warning-900">
-              <p className="font-medium mb-1">Duplicate Detection</p>
-              <p className="text-warning-700">
-                The system will automatically detect and flag duplicate customer IDs.
-                You'll be prompted to resolve conflicts before the data is saved.
-              </p>
-            </div>
-          </div>
-        </div>
-      </Card>
 
-      {/* Product Master Data */}
-      <Card>
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h3 className="text-lg font-semibold text-neutral-900">Product Master Data</h3>
-            <p className="text-sm text-neutral-600 mt-1">
-              Upload an Excel file containing product codes and descriptions
-            </p>
-          </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => handleDownloadTemplate('Product')}
-          >
-            <Download className="w-4 h-4" />
-            Download Template
-          </Button>
-        </div>
 
-        {/* Upload Area */}
-        <div className="border-2 border-dashed border-neutral-300 rounded-lg p-8 text-center hover:border-primary-400 hover:bg-neutral-50 transition-all">
-          <div className="flex flex-col items-center gap-4">
-            <div className="p-4 bg-secondary-100 rounded-full">
-              <Upload className="w-8 h-8 text-secondary-600" />
-            </div>
-            
-            <div>
-              <p className="text-base font-medium text-neutral-900 mb-1">
-                Upload Product Excel
-              </p>
-              <p className="text-sm text-neutral-600">
-                File must include columns: Product ID, Product Name, Category
-              </p>
-            </div>
+      {/* PRODUCT UPLOAD */}
+   <Card>
+  <h3 className="font-semibold mb-3">Product Master Upload</h3>
 
-            <label className="cursor-pointer">
-              <input
-                type="file"
-                accept=".xlsx,.xls"
-                onChange={handleProductUpload}
-                className="hidden"
-              />
-              <span className="inline-flex items-center gap-2 px-4 py-2 bg-white border border-neutral-300 text-neutral-700 rounded-lg hover:bg-neutral-50 transition-colors">
-                Select File
-              </span>
-            </label>
+  <input
+    type="file"
+    accept=".xlsx,.xls"
+    id="productFileInput"
+    className="hidden"
+    onChange={(e) => setProductFile(e.target.files?.[0] || null)}
+  />
 
-            {productFile && (
-              <div className="w-full max-w-md">
-                <div className="flex items-center justify-between p-3 bg-success-50 border border-success-200 rounded-lg">
-                  <div className="flex items-center gap-2">
-                    <CheckCircle className="w-5 h-5 text-success-600" />
-                    <span className="text-sm font-medium text-neutral-900">{productFile.name}</span>
-                  </div>
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    onClick={handleProductSubmit}
-                    isLoading={uploadingProduct}
-                  >
-                    Upload
-                  </Button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
+  <div className="flex items-center gap-3">
+    <Button
+      variant="secondary"
+      onClick={() =>
+        document.getElementById("productFileInput")?.click()
+      }
+    >
+      Select File
+    </Button>
 
-        {/* Validation Info */}
-        <div className="mt-4 p-4 bg-warning-50 border border-warning-200 rounded-lg">
-          <div className="flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-warning-600 flex-shrink-0 mt-0.5" />
-            <div className="text-sm text-warning-900">
-              <p className="font-medium mb-1">Duplicate Detection</p>
-              <p className="text-warning-700">
-                The system will automatically detect and flag duplicate product IDs.
-                You'll be prompted to resolve conflicts before the data is saved.
-              </p>
-            </div>
-          </div>
-        </div>
-      </Card>
+    {productFile ? (
+      <Badge variant="success">{productFile.name}</Badge>
+    ) : (
+      <span className="text-sm text-neutral-500">
+        No file selected
+      </span>
+    )}
+  </div>
 
-      {/* Recent Updates */}
-      <Card>
-        <h3 className="text-lg font-semibold text-neutral-900 mb-4">Recent Updates</h3>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between p-3 border border-neutral-200 rounded-lg">
-            <div>
-              <p className="font-medium text-neutral-900">Customer Master Data</p>
-              <p className="text-sm text-neutral-600">Updated by Admin User on Jan 2, 2026</p>
-            </div>
-            <Badge variant="success">2,453 records</Badge>
-          </div>
-          <div className="flex items-center justify-between p-3 border border-neutral-200 rounded-lg">
-            <div>
-              <p className="font-medium text-neutral-900">Product Master Data</p>
-              <p className="text-sm text-neutral-600">Updated by Admin User on Dec 28, 2025</p>
-            </div>
-            <Badge variant="success">1,847 records</Badge>
-          </div>
-        </div>
-      </Card>
+  <div className="flex justify-end mt-4">
+    <Button
+      onClick={uploadProducts}
+      isLoading={loadingProduct}
+      disabled={!productFile}
+    >
+      Upload Products
+    </Button>
+  </div>
+</Card>
+
+
+      <CustomerTable />
+<ProductManagement />
     </div>
   );
 }
