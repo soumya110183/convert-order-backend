@@ -1,4 +1,5 @@
 # ===============================
+<<<<<<< HEAD
 # Dependencies
 # ===============================
 node_modules/
@@ -25,10 +26,23 @@ build/
 # ===============================
 # Logs
 # ===============================
+=======
+# ENV & SECRETS
+# ===============================
+.env
+.env.*
+!.env.example
+
+# ===============================
+# NODE
+# ===============================
+node_modules/
+>>>>>>> 4aa9578 (first commit)
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+<<<<<<< HEAD
 logs/
 *.log
 
@@ -62,3 +76,53 @@ playwright-report/
 *.swo
 *.tmp
 *.bak
+=======
+
+# ===============================
+# BUILD / DIST
+# ===============================
+dist/
+build/
+coverage/
+
+# ===============================
+# UPLOADS / GENERATED FILES
+# ===============================
+uploads/
+output/
+converted/
+tmp/
+temp/
+
+# ===============================
+# TEST ARTIFACTS
+# ===============================
+test-output/
+test-results/
+*.log
+
+# ===============================
+# PDF / EXCEL GENERATED FILES
+# ===============================
+*.pdf
+*.xls
+*.xlsx
+*.csv
+
+# ⚠️ Allow test fixtures if needed
+!test-files/*.pdf
+!test-files/*.xls
+!test-files/*.xlsx
+!test-files/*.csv
+!test-files/*.txt
+
+# ===============================
+# OS FILES
+# ===============================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===============================
+# EDITO
+>>>>>>> 4aa9578 (first commit)
