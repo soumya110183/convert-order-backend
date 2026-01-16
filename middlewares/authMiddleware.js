@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 ====================================================== */
 export const protect = (req, res, next) => {
   let token;
- console.log("🔍 DECODED TOKEN:", decoded);
+
   // 1️⃣ From Authorization header
   if (
     req.headers.authorization &&
@@ -29,15 +29,12 @@ export const protect = (req, res, next) => {
   }
 
   try {
-  const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // ✅ decoded is defined HERE
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-req.user = decoded;
-next();
+    console.log("🔍 DECODED TOKEN:", decoded);
 
-
-    // Expected payload: { id, email, role }
-    req.user = decoded;
-
+    req.user = decoded; // { id, name, email, role }
     next();
   } catch (error) {
     return res.status(401).json({ message: "Invalid or expired token" });
@@ -45,7 +42,7 @@ next();
 };
 
 /* ======================================================
-   ADMIN GUARD (SINGLE SOURCE)
+   ADMIN GUARD
 ====================================================== */
 export const adminOnly = (req, res, next) => {
   if (!req.user || req.user.role !== "admin") {
