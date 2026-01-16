@@ -90,9 +90,9 @@ export async function extractTextFromPDFAdvanced(buffer) {
         const fontDiff = Math.abs(r.fontSize - item.fontSize);
         if (fontDiff > FONT_SIZE_THRESHOLD) return false;
         
-        // Additional check: prevent merging if Y positions differ AND
-        // the existing row already has substantial content
-        if (yDiff > 0.5 && r.cells.length > 5) return false;
+        // Additional check: prevent merging if Y positions differ significantly
+        // Relaxed this to allow product rows where name is slightly lower than qty
+        if (yDiff > 1.2 && r.cells.length > 10) return false;
         
         return true;
       });

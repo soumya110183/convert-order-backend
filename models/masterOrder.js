@@ -1,42 +1,54 @@
 import mongoose from "mongoose";
 
-/**
- * @deprecated
- * THIS MODEL IS DEPRECATED as of Refactor v2.0
- * DO NOT USE FOR NEW BUSINESS LOGIC.
- * Maintained only for historical data reference if absolutely needed.
- * Use CustomerMaster for aggregated data.
- */
-
 const masterOrderSchema = new mongoose.Schema(
   {
-    /* ======================
-       CORE BUSINESS KEYS
-    ====================== */
-
-    // Customer info
-    customerName: {
+    productCode: {
       type: String,
       required: true,
-      trim: true,
-      index: true,
+      uppercase: true,
+      index: true
     },
 
-    // Unique Deduplication Key: MD5(customerName + itemdesc)
-    dedupKey: {
+    itemdesc: {
       type: String,
-      required: true,
-      unique: true,
-      index: true,
-      trim: true
+      uppercase: true,
+      index: true
     },
-    // ... remaining fields retained for schema compatibility but unused ...
+
+    division: {
+      type: String,
+      uppercase: true,
+      index: true
+    },
+
+    pack: {
+      type: Number,
+      default: 0
+    },
+
+    boxPack: {
+      type: Number,
+      default: 0
+    },
+
+    orderQty: {
+      type: Number,
+      default: 0
+    },
+
+    isActive: {
+      type: Boolean,
+      default: true
+    }
   },
   {
     timestamps: true,
-    strict: false // Allow whatever was there
+    collection: "master_orders"
   }
 );
+
+/* ✅ Compound index for fast lookups */
+masterOrderSchema.index({ productCode: 1, division: 1 });
 
 export default mongoose.models.MasterOrder ||
   mongoose.model("MasterOrder", masterOrderSchema);

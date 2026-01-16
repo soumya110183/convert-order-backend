@@ -1,224 +1,282 @@
-import User from "../../models/User.js";
-import OrderUpload from "../../models/orderUpload.js";
-import MappingRule from "../../models/mappingRules.js";
-import SystemAlert from "../../models/systemAlerts.js";
-import ActivityLog from "../../models/activityLogs.js";
+import XLSX from "xlsx";
+import crypto from "crypto";
+
+import { uploadMasterExcel } from "../../services/masterUploadService.js";
 import CustomerMaster from "../../models/customerMaster.js";
 import ProductMaster from "../../models/productMaster.js";
-import { hashPassword } from "../../utils/password.js";
-import XLSX from "xlsx";
+import InvoiceAudit from "../../models/invoiceAudit.js";
+import User from "../../models/User.js";
 
-export const addUser = async (req, res, next) => {
-  try {
-    const { email, password, role } = req.body;
+/**
+ * =====================================================
+ * ADMIN MASTER CONTROLLER (PRODUCTION)
+ *
+ * RULES:
+ * - Admin DB is WRITEABLE only by admin
+ * - User uploads NEVER modify admin DB
+ * - No order quantity stored in admin DB
+ * =====================================================
+ */
 
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password required" });
-    }
-
-    const exists = await User.findOne({ email });
-    if (exists) {
-      return res.status(409).json({ message: "User already exists" });
-    }
-
-    const hashed = await hashPassword(password);
-
-    // ✅ Auto-generate name from email
-    const nameFromEmail = email
-      .split("@")[0]
-      .replace(/[^a-zA-Z]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-
-    const user = await User.create({
-      name: nameFromEmail || "Staff User", // ✅ IMPORTANT
-      email,
-      password: hashed,
-      role: (role || "user").toLowerCase(),
-    });
-
-    res.status(201).json({
-      message: "User added successfully",
-      id: user._id,
-      name: user.name,   // ✅ return name
-      email: user.email,
-      role: user.role,
-    });
-  } catch (err) {
-    next(err);
+/* =====================================================
+   ADMIN GUARD (OPTIONAL IF DONE IN ROUTER)
+===================================================== */
+function ensureAdmin(req, res) {
+  if (req.user?.role !== "admin") {
+    res.status(403).json({ success: false, message: "Admin access required" });
+    return false;
   }
-};
+  return true;
+}
 
-
-export const getMappingRules = async (req, res) => {
-  const rules = await MappingRule.find().sort({ updatedAt: -1 });
-  res.json({ success: true, rules });
-};
-
-export const getRecentUploadsPaginated = async (req, res) => {
-  const page = Math.max(parseInt(req.query.page) || 1, 1);
-  const limit = Math.min(parseInt(req.query.limit) || 10, 50);
-  const skip = (page - 1) * limit;
-
-  const [total, uploads] = await Promise.all([
-    OrderUpload.countDocuments(),
-    OrderUpload.find()
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(limit)
-      .select(
-        "fileName userEmail status recordsProcessed recordsFailed createdAt"
-      )
-      .lean(),
-  ]);
-
-  res.json({
-    data: uploads,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-      hasNext: skip + uploads.length < total,
-      hasPrev: page > 1,
-    },
-  });
-};
-
-/* ========================================================================
-   CUSTOMER MASTER MANAGEMENT
-   ======================================================================== */
-
-export async function addCustomer(req, res) {
+/* =====================================================
+   UPLOAD MASTER EXCEL
+   POST /api/admin/master/upload
+===================================================== */
+export async function uploadMaster(req, res, next) {
   try {
-    const { customerCode, customerName } = req.body;
+    if (!ensureAdmin(req, res)) return;
 
-    if (!customerCode) {
-      return res.status(400).json({ error: "CUSTOMER_CODE_REQUIRED" });
+    if (!req.file) {
+      return res.status(400).json({
+        success: false,
+        error: "NO_FILE_UPLOADED",
+        message: "Please upload an Excel file"
+      });
     }
 
-    const existing = await CustomerMaster.findOne({ customerCode: customerCode.trim() });
-    
-    if (existing) {
-       return res.status(409).json({ error: "CUSTOMER_ALREADY_EXISTS" });
-    }
+    const fileHash = crypto
+      .createHash("sha256")
+      .update(req.file.buffer)
+      .digest("hex");
 
-    const customer = await CustomerMaster.create({
-      customerCode: customerCode.trim(),
-      customerName: customerName?.trim() || ""
-    });
+    const stats = await uploadMasterExcel(req.file.buffer);
+
+    if (!stats.customers || !stats.products) {
+      return res.status(422).json({
+        success: false,
+        message: "Excel must contain both Customer and Product sheets"
+      });
+    }
 
     res.json({
       success: true,
-      customer
-    });
-  } catch (err) {
-    console.error("Add customer error:", err);
-    res.status(500).json({ error: "FAILED_TO_ADD_CUSTOMER" });
-  }
-}
-
-/* ========================================================================
-   PRODUCT MASTER MANAGEMENT
-   ======================================================================== */
-
-export async function addProduct(req, res) {
-  try {
-    const { productCode, productName, division } = req.body;
-
-    if (!productCode || !productName) {
-      return res.status(400).json({ error: "CODE_AND_NAME_REQUIRED" });
-    }
-
-    const existing = await ProductMaster.findOne({ productCode: productCode.trim() });
-    if (existing) {
-      return res.status(409).json({ error: "PRODUCT_ALREADY_EXISTS" });
-    }
-
-    const product = await ProductMaster.create({
-      productCode: productCode.trim(),
-      productName: productName.trim(),
-      division: division?.trim() || ""
+      message: "Master database uploaded successfully",
+      stats
     });
 
-    res.json({ success: true, product });
   } catch (err) {
-    console.error("Add product error:", err);
-    res.status(500).json({ error: "FAILED_TO_ADD_PRODUCT" });
+    if (err.message === "EMPTY_EXCEL_FILE") {
+      return res.status(422).json({ success: false, message: "Empty or invalid Excel file" });
+    }
+    next(err);
   }
 }
 
-export async function transferProduct(req, res) {
+/* =====================================================
+   MASTER STATS (NO QUANTITY)
+   GET /api/admin/master/stats
+===================================================== */
+export async function getMasterStats(req, res, next) {
   try {
-    const { productCode, newDivision } = req.body;
+    if (!ensureAdmin(req, res)) return;
 
-    if (!productCode || !newDivision) {
-      return res.status(400).json({ error: "CODE_AND_DIVISION_REQUIRED" });
-    }
+    const [customers, products] = await Promise.all([
+      CustomerMaster.countDocuments(),
+      ProductMaster.countDocuments()
+    ]);
 
-    const product = await ProductMaster.findOneAndUpdate(
-      { productCode: productCode.trim() },
-      { $set: { division: newDivision.trim() } },
-      { new: true }
-    );
+    res.json({
+      success: true,
+      stats: {
+        customers,
+        products
+      }
+    });
 
-    if (!product) {
-      return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
-    }
-
-    res.json({ success: true, product });
   } catch (err) {
-    console.error("Transfer product error:", err);
-    res.status(500).json({ error: "FAILED_TO_TRANSFER_PRODUCT" });
+    next(err);
   }
 }
 
-/* ========================================================================
-   ADMIN EXPORT (Customer Aggregated)
-   ======================================================================== */
-
-export const exportCustomers = async (req, res) => {
+/* =====================================================
+   EXPORT MASTER DATABASE
+   GET /api/admin/master/export
+===================================================== */
+export async function exportMaster(req, res, next) {
   try {
-    const customers = await CustomerMaster.find()
-      .sort({ customerName: 1 })
-      .lean();
+    if (!ensureAdmin(req, res)) return;
 
-    if (!customers.length) {
-      return res.status(404).json({ message: "No customer data found" });
+    const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();
+    const products = await ProductMaster.find().sort({ productCode: 1 }).lean();
+
+    if (!customers.length && !products.length) {
+      return res.status(404).json({ success: false, message: "No master data found" });
     }
-
-    console.log(`📊 Exporting ${customers.length} customers`);
-
-    const exportRows = customers.map(c => ({
-      "Customer Code": c.customerCode,
-      "Customer Name": c.customerName,
-      "Total Order Qty": c.totalOrderQty || 0,
-      "Last Updated": c.updatedAt ? new Date(c.updatedAt).toISOString().split('T')[0] : ""
-    }));
 
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(exportRows);
-    
-    // Auto-width
-    const wscols = [
-      { wch: 15 },
-      { wch: 40 },
-      { wch: 15 },
-      { wch: 15 }
-    ];
-    ws['!cols'] = wscols;
 
-    XLSX.utils.book_append_sheet(wb, ws, "Customer Master");
+    /* ---------------- CUSTOMER SHEET ---------------- */
+    const customerSheet = XLSX.utils.json_to_sheet(
+      customers.map(c => ({
+        "Customer Code": c.customerCode,
+        "Customer Name": c.customerName,
+        "City": c.city || "",
+        "State": c.state || "",
+        "GST No": c.gstNo || "",
+        "Email": c.email || ""
+      }))
+    );
+    XLSX.utils.book_append_sheet(wb, customerSheet, "Customers");
 
-    const buf = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
-    const filename = `customer_master_export_${Date.now()}.xlsx`;
+    /* ---------------- PRODUCT SHEET ---------------- */
+    const productSheet = XLSX.utils.json_to_sheet(
+      products.map(p => ({
+        "SAP Code": p.productCode,
+        "Item Description": p.productName,
+        "Division": p.division || ""
+      }))
+    );
+    XLSX.utils.book_append_sheet(wb, productSheet, "Products");
+
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.send(buf);
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="master-data-${Date.now()}.xlsx"`
+    );
+    res.send(buffer);
 
   } catch (err) {
-    console.error("Export error:", err);
-    res.status(500).json({ message: "Export failed" });
+    next(err);
   }
+}
+
+/* =====================================================
+   AUDIT HISTORY (READ-ONLY)
+   GET /api/admin/audits
+===================================================== */
+export async function getAuditHistory(req, res, next) {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const skip = (page - 1) * limit;
+
+    const query = {};
+    if (req.query.status) query.status = req.query.status.toUpperCase();
+    if (req.query.userId) query.userId = req.query.userId;
+
+    const [total, audits] = await Promise.all([
+      InvoiceAudit.countDocuments(query),
+      InvoiceAudit.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("userId", "name email")
+        .lean()
+    ]);
+
+    res.json({
+      success: true,
+      data: audits,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
+   ADMIN DASHBOARD (COUNTS ONLY)
+   GET /api/admin/dashboard
+===================================================== */
+export async function getAdminDashboard(req, res, next) {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const [
+      customerCount,
+      productCount,
+      userCount,
+      uploadCount,
+      successCount,
+      failCount
+    ] = await Promise.all([
+      CustomerMaster.countDocuments(),
+      ProductMaster.countDocuments(),
+      User.countDocuments(),
+      InvoiceAudit.countDocuments(),
+      InvoiceAudit.countDocuments({ status: "COMPLETED" }),
+      InvoiceAudit.countDocuments({ status: "FAILED" })
+    ]);
+
+    res.json({
+      success: true,
+      stats: {
+        customers: customerCount,
+        products: productCount,
+        users: userCount,
+        uploads: uploadCount,
+        successRate:
+          uploadCount === 0
+            ? 100
+            : ((successCount / uploadCount) * 100).toFixed(1)
+      }
+    });
+
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
+   SEARCH MASTER DATA
+   GET /api/admin/master/search
+===================================================== */
+export async function searchMasterData(req, res, next) {
+  try {
+    if (!ensureAdmin(req, res)) return;
+
+    const q = (req.query.q || "").trim();
+    const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+    const products = await ProductMaster.find(
+      q
+        ? {
+            $or: [
+              { productName: { $regex: safeQ, $options: "i" } },
+              { productCode: { $regex: safeQ, $options: "i" } }
+            ]
+          }
+        : {}
+    )
+      .limit(100)
+      .lean();
+
+    res.json({ success: true, data: products });
+
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
+   EXPORTS
+===================================================== */
+export default {
+  uploadMaster,
+  getMasterStats,
+  exportMaster,
+  getAuditHistory,
+  getAdminDashboard,
+  searchMasterData
 };

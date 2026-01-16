@@ -36,14 +36,15 @@ export const login = async (req, res, next) => {
 };
 
 export const getMe = async (req, res) => {
-  try {
-    res.status(200).json({
-      id: req.user.id,
-      name: req.user.name,
-      role: req.user.role,
-      email: req.user.email,
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Failed to fetch user" });
+  if (!req.user) {
+    return res.status(401).json({ message: "Unauthorized" });
   }
+
+  res.status(200).json({
+    id: req.user.id,
+    name: req.user.name ?? null,
+    email: req.user.email,
+    role: req.user.role,
+  });
 };
+

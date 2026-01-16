@@ -3,40 +3,33 @@ import mongoose from "mongoose";
 const productMasterSchema = new mongoose.Schema(
   {
     productCode: {
-      // SAPCODE or Derived
       type: String,
       required: true,
-      unique: true,
-      trim: true,
       uppercase: true,
+      unique: true,
       index: true
     },
 
     productName: {
-      // ITEMDESC
       type: String,
       required: true,
-      trim: true,
       uppercase: true
     },
 
     division: {
-      // DVN
       type: String,
-      trim: true,
       uppercase: true,
-      index: true // Useful for filtering
+      index: true
     },
 
-    isActive: {
-      type: Boolean,
-      default: true
-    }
+    boxPack: { type: Number, default: 0 },
+    pack: { type: Number, default: 0 }
   },
   {
-    collection: "product_master",
-    timestamps: true
+    timestamps: true,
+    collection: "products" // 🔒 LOCKED
   }
 );
 
-export default mongoose.models.ProductMaster || mongoose.model("ProductMaster", productMasterSchema);
+export default mongoose.models.ProductMaster ||
+  mongoose.model("ProductMaster", productMasterSchema);

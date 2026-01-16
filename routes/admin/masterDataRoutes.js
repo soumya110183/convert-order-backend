@@ -1,21 +1,74 @@
 import express from "express";
 import multer from "multer";
 import {
-  uploadCustomers,
-  uploadProducts,
-  addCustomer,
-  addProduct,
-  transferProduct
+  uploadMasterDatabase,
+  exportMasterDatabase,
+  getCustomers,
+  createCustomer,
+  updateCustomer,
+  deleteCustomer,
+  getProducts,
+  createProduct,
+  updateProduct,
+  deleteProduct,
+  transferProduct,
+  getSchemes,
+  createScheme,
+  updateScheme,
+  deleteScheme,
 } from "../../controllers/admin/masterDataController.js";
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
-router.post("/customers/upload", upload.single("file"), uploadCustomers);
-router.post("/products/upload", upload.single("file"), uploadProducts);
+// =====================================================
+// MASTER DATABASE ROUTES
+// =====================================================
 
-router.post("/customers/add", addCustomer);
-router.post("/products/add", addProduct);
+// Upload master database (3-sheet Excel file)
+router.post("/master/upload", upload.single("file"), uploadMasterDatabase);
+
+// Export master database
+router.get("/master/export", exportMasterDatabase);
+
+// =====================================================
+// CUSTOMER ROUTES
+// =====================================================
+
+// Get all customers (with pagination and search)
+router.get("/customers", getCustomers);
+
+// Create a new customer
+router.post("/customers", createCustomer);
+
+// Update a customer
+router.put("/customers/:id", updateCustomer);
+
+// Delete a customer
+router.delete("/customers/:id", deleteCustomer);
+
+// =====================================================
+// PRODUCT ROUTES
+// =====================================================
+
+// Get all products (with pagination and search)
+router.get("/products", getProducts);
+
+// Create a new product
+router.post("/products", createProduct);
+
+// Update a product
+router.put("/products/:id", updateProduct);
+
+// Delete a product
+router.delete("/products/:id", deleteProduct);
+
+// Transfer product to new division
 router.patch("/products/transfer", transferProduct);
+
+router.get("/schemes", getSchemes);
+router.post("/schemes", createScheme);
+router.put("/schemes/:id", updateScheme);
+router.delete("/schemes/:id", deleteScheme);
 
 export default router;

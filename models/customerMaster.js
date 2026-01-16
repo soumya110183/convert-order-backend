@@ -1,35 +1,59 @@
 import mongoose from "mongoose";
 
-const customerSchema = new mongoose.Schema(
+const customerMasterSchema = new mongoose.Schema(
   {
     customerCode: {
       type: String,
       required: true,
-      unique: true,
       uppercase: true,
       trim: true,
       index: true
     },
 
+    customerType: String,
+
     customerName: {
       type: String,
-      required: true, // Made required
+      required: true,
       uppercase: true,
+      trim: true,
+      index: true
+    },
+
+    address1: String,
+    address2: String,
+    address3: String,
+    city: String,
+    pinCode: String,
+    state: String,
+    contactPerson: String,
+    phoneNo1: String,
+    phoneNo2: String,
+    mobileNo: String,
+    drugLicNo: String,
+    drugLicFromDt: String,
+    drugLicToDt: String,
+    drugLicNo1: String,
+    drugLicFromDt1: String,
+    drugLicToDt1: String,
+    gstNo: String,
+
+    email: {
+      type: String,
+      lowercase: true,
       trim: true
     },
 
     totalOrderQty: {
-      // Aggregated quantity from all orders
       type: Number,
       default: 0
-    },
-
-    isActive: {
-      type: Boolean,
-      default: true
     }
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    collection: "customers" // 🔒 LOCKED
+  }
 );
 
-export default mongoose.models.CustomerMaster || mongoose.model("CustomerMaster", customerSchema);
+export default mongoose.models.CustomerMaster ||
+  mongoose.model("CustomerMaster", customerMasterSchema);

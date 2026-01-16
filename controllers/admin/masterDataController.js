@@ -1,189 +1,543 @@
+/* =====================================================
+   MASTER DATABASE UPLOAD (SINGLE EXCEL, MULTI SHEET)
+   - Inserts customers/products if missing
+   - Updates existing records
+===================================================== */
+import mongoose from "mongoose";
+import XLSX from "xlsx";
 import CustomerMaster from "../../models/customerMaster.js";
 import ProductMaster from "../../models/productMaster.js";
-import { readExcel } from "../../utils/readExcels.js";
+import MasterOrder from "../../models/masterOrder.js";
+import { readExcelSheets } from "../../utils/readExcels.js";
+import SchemeMaster from "../../models/schemeMaster.js";
+
 
 /* =====================================================
-   CUSTOMER UPLOAD (EXCEL)
+   UTILITIES
 ===================================================== */
-export const uploadCustomers = async (req, res) => {
+
+const findSheet = (sheets, keywords) =>
+  Object.entries(sheets).find(([name]) =>
+    keywords.some(k => name.includes(k))
+  )?.[1] || [];
+
+const normalize = (v = "") =>
+  v.toString().trim().toUpperCase();
+
+/* =====================================================
+   MASTER DATABASE UPLOAD
+===================================================== */
+export const uploadMasterDatabase = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    console.log("📥 Received customer upload request");
     if (!req.file) {
-      console.warn("⚠️ No file provided in customer upload");
       return res.status(400).json({ error: "NO_FILE_UPLOADED" });
     }
 
-    const rows = readExcel(req.file.buffer);
-    console.log(`📊 Processing ${rows.length} rows from Excel`);
+    const sheets = readExcelSheets(req.file.buffer);
 
-    let inserted = 0;
-    let skipped = 0;
+   const customerRows =
+  Object.entries(sheets).find(([k]) =>
+    k.includes("customer")
+  )?.[1] || [];
 
-    for (const r of rows) {
-      const code = String(r["Customer ID"] || "").trim();
-      const name = String(r["Customer Name"] || "").trim();
+   const productRows =
+  Object.entries(sheets).find(([k]) =>
+    k.includes("sap") || k.includes("product")
+  )?.[1] || [];
 
-      if (!name) {
-        skipped++;
-        continue;
-      }
 
-      try {
-        const exists = await CustomerMaster.findOne({
-          $or: [{ customerCode: code }, { customerName: name }]
-        });
+    let inserted = { customers: 0, products: 0 };
+    let updated = { customers: 0, products: 0 };
 
-        if (exists) {
-          skipped++;
-          continue;
+    /* ================= CUSTOMERS ================= */
+const customerOps = customerRows.map(r => {
+  const customerCode   = (r["customer code"] || r["code"] || r["sap code"])?.toString().trim();
+  const customerType   = (r["customer type"] || r["type"])?.toString().trim();
+  const customerName   = (r["customer name"] || r["name"])?.toString().trim();
+  const address1       = r["address 1"]?.toString().trim();
+  const address2       = r["address 2"]?.toString().trim();
+  const address3       = r["address 3"]?.toString().trim();
+  const city           = r["city"]?.toString().trim();
+  const pinCode        = r["pin code"]?.toString().trim();
+  const state          = r["state"]?.toString().trim();
+  const contactPerson  = r["contact person"]?.toString().trim();
+  const phoneNo1       = r["phone no1"]?.toString().trim();
+  const phoneNo2       = r["phone no2"]?.toString().trim();
+  const mobileNo       = r["mobile no"]?.toString().trim();
+  const drugLicNo      = r["drug lic no"]?.toString().trim();
+  const drugLicFromDt  = r["drug lic from dt"]?.toString().trim();
+  const drugLicToDt    = r["drug lic to dt"]?.toString().trim();
+  const drugLicNo1     = r["drug lic no1"]?.toString().trim();
+  const drugLicFromDt1 = r["drug lic from dt1"]?.toString().trim();
+  const drugLicToDt1   = r["drug lic to dt1"]?.toString().trim();
+  const gstNo          = r["gst no"]?.toString().trim();
+  const email          = r["e mail"]?.toString().trim();
+
+  if (!customerCode || !customerName) return null;
+
+  return {
+    updateOne: {
+      filter: { customerCode },
+     update: {
+  $set: {
+    customerType: customerType || "",
+    customerName: customerName || "",
+    address1,
+    address2,
+    address3,
+    city,
+    pinCode,
+    state,
+    contactPerson,
+    phoneNo1,
+    phoneNo2,
+    mobileNo,
+    drugLicNo,
+    drugLicFromDt,
+    drugLicToDt,
+    drugLicNo1,
+    drugLicFromDt1,
+    drugLicToDt1,
+    gstNo,
+    email
+  }
+},
+      upsert: true
+    }
+  };
+}).filter(Boolean);
+
+
+
+
+ if (customerOps.length > 0) {
+  const result = await CustomerMaster.bulkWrite(customerOps, { session });
+  inserted.customers = result.upsertedCount || 0;
+  updated.customers = result.modifiedCount || 0;
+}
+
+
+    /* ================= PRODUCTS ================= */
+    const productOps = productRows.map(r => {
+      const productCode = r["sap code"]?.toString().trim();
+      const productName = r["item desc"]?.toString().trim();
+      const division    = r["dvn"]?.toString().trim();
+
+      if (!productCode || !productName) return null;
+
+      return {
+        updateOne: {
+          filter: { productCode },
+          update: {
+            $set: {
+              productCode,
+              productName,
+              division
+            }
+          },
+          upsert: true
         }
+      };
+    }).filter(Boolean);
 
-        await CustomerMaster.create({
-          customerCode: code || undefined,
-          customerName: name
-        });
-
-        console.log(`✅ Created customer: ${name} (${code || "No Code"})`);
-        inserted++;
-      } catch (rowErr) {
-        console.error(`❌ Error processing customer row: ${name}`, rowErr.message);
-        skipped++;
-      }
+    if (productOps.length) {
+      const r = await ProductMaster.bulkWrite(productOps, { session });
+      inserted.products = r.upsertedCount;
+      updated.products = r.modifiedCount;
     }
 
-    console.log(`🏁 Customer upload complete: ${inserted} inserted, ${skipped} skipped`);
+
+
+    /* ================= SCHEMES ================= */
+    const schemeRows =
+      Object.entries(sheets).find(([k]) =>
+        k.toLowerCase().includes("scheme")
+      )?.[1] || [];
+
+    console.log(`📊 Processing ${schemeRows.length} scheme rows...`);
+    if (schemeRows.length > 0) {
+      console.log("📝 Detected Headers/Keys:", Object.keys(schemeRows[0]));
+      console.log("📝 Sample Data Row:", JSON.stringify(schemeRows.find(r => Object.values(r).some(v => v)), null, 2));
+    }
+
+    let currentDivision = "";
+    const schemeOps = [];
+
+    schemeRows.forEach((r, idx) => {
+      // 1. Detect Division Header Row
+      const firstVal = Object.values(r).find(v => v?.toString().toUpperCase().includes("DIVISION :"))?.toString() || "";
+      if (firstVal.toUpperCase().includes("DIVISION :")) {
+        currentDivision = firstVal.split(":")[1]?.trim().toUpperCase();
+        console.log(`📂 Switch Division: ${currentDivision}`);
+        return;
+      }
+
+      // 2. Identify all "Product" column sets (e.g., product, product_1, product_2)
+      // We look for any key that normalized to 'product' or 'item desc'
+      const keys = Object.keys(r);
+      const productKeys = keys.filter(k => k.startsWith("product") || k.startsWith("item desc"));
+
+      productKeys.forEach(pk => {
+        const suffix = pk.includes("_") ? pk.split("_")[1] : "";
+        const suffixStr = suffix ? `_${suffix}` : "";
+
+        const productName = r[pk]?.toString().trim().toUpperCase();
+        const minQty = Number(r[`min qty${suffixStr}`] || r[`minqty${suffixStr}`]) || 0;
+        const freeQty = Number(r[`free qty${suffixStr}`] || r[`freeqty${suffixStr}`]) || 0;
+        const schemePercent = Number(
+          r[`schme %${suffixStr}`] || 
+          r[`schime %${suffixStr}`] || 
+          r[`scheme %${suffixStr}`] || 
+          r[`percent${suffixStr}`]
+        ) || 0;
+
+        if (!productName || (minQty === 0 && freeQty === 0 && schemePercent === 0)) {
+          return;
+        }
+
+        console.log(`✅ Mapping: [${currentDivision || "N/A"}] ${productName} -> ${minQty}+${freeQty} (${schemePercent}%)`);
+
+        schemeOps.push({
+          updateOne: {
+            filter: { productName },
+            update: {
+              $set: {
+                productName,
+                minQty,
+                freeQty,
+                schemePercent,
+                division: currentDivision
+              }
+            },
+            upsert: true
+          }
+        });
+      });
+    });
+
+    console.log(`💾 Finalizing bulkWrite for ${schemeOps.length} schemes...`);
+    if (schemeOps.length) {
+      await SchemeMaster.bulkWrite(schemeOps, { session });
+    }
+
+
+/* ✅ NOW COMMIT */
+await session.commitTransaction();
+session.endSession();
+
+
+
     res.json({
       success: true,
+      message: "Master database uploaded successfully",
       inserted,
-      skipped
+      updated
     });
+
   } catch (err) {
-    console.error("❌ Critical Customer upload error:", err);
-    res.status(500).json({ 
-      error: "CUSTOMER_UPLOAD_FAILED",
-      details: err.message 
-    });
+    await session.abortTransaction();
+    session.endSession();
+    console.error(err);
+    res.status(500).json({ error: "MASTER_UPLOAD_FAILED", details: err.message });
   }
 };
 
 /* =====================================================
-   PRODUCT UPLOAD (EXCEL)
+   EXPORT MASTER DATABASE
 ===================================================== */
-export const uploadProducts = async (req, res) => {
+export const exportMasterDatabase = async (req, res) => {
   try {
-    console.log("📥 Received product upload request");
-    if (!req.file) {
-      console.warn("⚠️ No file provided in product upload");
-      return res.status(400).json({ error: "NO_FILE_UPLOADED" });
-    }
+    const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();
+    const products = await ProductMaster.find().sort({ productName: 1 }).lean();
 
-    const rows = readExcel(req.file.buffer);
-    console.log(`📊 Processing ${rows.length} rows for products from Excel`);
+    // Create workbook
+    const wb = XLSX.utils.book_new();
 
-    let inserted = 0;
-    let skipped = 0;
+    // Customer sheet with full format
+    const customerData = customers.map(c => ({
+      "Code": c.customerCode || "",
+      "Customer Type": c.customerType || "",
+      "Customer Name": c.customerName || "",
+      "Address 1": c.address1 || "",
+      "Address 2": c.address2 || "",
+      "Address 3": c.address3 || "",
+      "City": c.city || "",
+      "Pin Code": c.pinCode || "",
+      "State": c.state || "",
+      "Contact Person": c.contactPerson || "",
+      "Phone No1": c.phoneNo1 || "",
+      "Phone No2": c.phoneNo2 || "",
+      "Mobile No": c.mobileNo || "",
+      "Drug Lic No": c.drugLicNo || "",
+      "Drug Lic From Dt": c.drugLicFromDt || "",
+      "Drug Lic To Dt": c.drugLicToDt || "",
+      "Drug Lic No1": c.drugLicNo1 || "",
+      "Drug Lic From Dt1": c.drugLicFromDt1 || "",
+      "Drug Lic To Dt1": c.drugLicToDt1 || "",
+      "Gst No": c.gstNo || "",
+      "E Mail": c.email || ""
+    }));
+    const customerSheet = XLSX.utils.json_to_sheet(customerData);
+    XLSX.utils.book_append_sheet(wb, customerSheet, "customer db");
 
-    for (const r of rows) {
-      const code = String(r["Product ID"] || "").trim();
-      const name = String(r["Product Name"] || "").trim();
-      const division = String(r["Division"] || "").trim();
+    // Product sheet
+    const productData = products.map(p => ({
+      "SAP Code": p.productCode,
+      "Item Desc": p.productName,
+      "Dvn": p.division || ""
+    }));
+    const productSheet = XLSX.utils.json_to_sheet(productData);
+    XLSX.utils.book_append_sheet(wb, productSheet, "product db");
+    const schemes = await SchemeMaster.find().sort({ productName: 1 }).lean();
 
-      if (!code || !name) {
-        skipped++;
-        continue;
-      }
+    const schemeData = schemes.map(s => ({
+      "Division": s.division || "",
+      "Product": s.productName,
+      "Min Qty": s.minQty,
+      "Free Qty": s.freeQty,
+      "Scheme %": s.schemePercent
+    }));
 
-      try {
-        const exists = await ProductMaster.findOne({ productCode: code });
-        if (exists) {
-          skipped++;
-          continue;
-        }
+    XLSX.utils.book_append_sheet(
+      wb,
+      XLSX.utils.json_to_sheet(schemeData),
+      "scheme db"
+    );
 
-        await ProductMaster.create({
-          productCode: code,
-          productName: name,
-          division
-        });
+    // Generate buffer
+    const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
 
-        console.log(`✅ Created product: ${name} (${code})`);
-        inserted++;
-      } catch (rowErr) {
-        console.error(`❌ Error processing product row: ${name}`, rowErr.message);
-        skipped++;
-      }
-    }
+    // Send file
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=master-data-${Date.now()}.xlsx`
+    );
+    res.send(buffer);
 
-    console.log(`🏁 Product upload complete: ${inserted} inserted, ${skipped} skipped`);
-    res.json({
-      success: true,
-      inserted,
-      skipped
-    });
   } catch (err) {
-    console.error("❌ Critical Product upload error:", err);
-    res.status(500).json({ 
-      error: "PRODUCT_UPLOAD_FAILED",
-      details: err.message 
-    });
+    console.error("EXPORT FAILED:", err);
+    res.status(500).json({ error: "EXPORT_FAILED", details: err.message });
   }
 };
 
 /* =====================================================
-   ADD CUSTOMER (MANUAL)
+   CUSTOMERS – CRUD
 ===================================================== */
-export const addCustomer = async (req, res) => {
-  const { customerCode, customerName } = req.body;
-  try {
-    console.log(`👤 Manual add customer request: ${customerName}`);
 
-    if (!customerName) {
-      return res.status(400).json({ error: "CUSTOMER_NAME_REQUIRED" });
+export const getCustomers = async (req, res) => {
+  try {
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 10);
+    const search = req.query.search || "";
+
+    const query = search
+      ? {
+          $or: [
+            { customerName: { $regex: search, $options: "i" } },
+            { customerCode: { $regex: search, $options: "i" } },
+            { city: { $regex: search, $options: "i" } },
+            { state: { $regex: search, $options: "i" } }
+          ]
+        }
+      : {};
+
+    const [data, total] = await Promise.all([
+      CustomerMaster.find(query)
+        .sort({ customerCode: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+
+      CustomerMaster.countDocuments(query)
+    ]);
+
+    res.json({
+      success: true,
+      data,
+      total,
+      page,
+      limit
+    });
+
+  } catch (err) {
+    console.error("GET CUSTOMERS FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_FETCH_CUSTOMERS" });
+  }
+};
+
+
+export const createCustomer = async (req, res) => {
+  try {
+    const {
+      customerCode,
+      customerType,
+      customerName,
+      address1,
+      address2,
+      address3,
+      city,
+      pinCode,
+      state,
+      contactPerson,
+      phoneNo1,
+      phoneNo2,
+      mobileNo,
+      drugLicNo,
+      drugLicFromDt,
+      drugLicToDt,
+      drugLicNo1,
+      drugLicFromDt1,
+      drugLicToDt1,
+      gstNo,
+      email
+    } = req.body;
+
+    if (!customerCode || !customerName) {
+      return res.status(400).json({ error: "CODE_AND_NAME_REQUIRED" });
     }
 
-    const exists = await CustomerMaster.findOne({
-      $or: [
-        ...(customerCode ? [{ customerCode: customerCode.trim() }] : []),
-        { customerName: customerName.trim() }
-      ]
-    });
+    const exists = await CustomerMaster.findOne({ customerCode: customerCode.trim() });
 
     if (exists) {
-      console.warn(`⚠️ Customer already exists: ${customerName}`);
-      return res.status(409).json({ error: "CUSTOMER_ALREADY_EXISTS" });
+      return res.status(409).json({ error: "CUSTOMER_CODE_ALREADY_EXISTS" });
     }
 
     const customer = await CustomerMaster.create({
       customerCode: customerCode?.trim(),
-      customerName: customerName.trim()
+      customerType: customerType?.trim(),
+      customerName: customerName?.trim(),
+      address1: address1?.trim(),
+      address2: address2?.trim(),
+      address3: address3?.trim(),
+      city: city?.trim(),
+      pinCode: pinCode?.trim(),
+      state: state?.trim(),
+      contactPerson: contactPerson?.trim(),
+      phoneNo1: phoneNo1?.trim(),
+      phoneNo2: phoneNo2?.trim(),
+      mobileNo: mobileNo?.trim(),
+      drugLicNo: drugLicNo?.trim(),
+      drugLicFromDt: drugLicFromDt?.trim(),
+      drugLicToDt: drugLicToDt?.trim(),
+      drugLicNo1: drugLicNo1?.trim(),
+      drugLicFromDt1: drugLicFromDt1?.trim(),
+      drugLicToDt1: drugLicToDt1?.trim(),
+      gstNo: gstNo?.trim(),
+      email: email?.trim()
     });
 
-    console.log(`✅ Manually added customer: ${customerName}`);
     res.json({ success: true, customer });
   } catch (err) {
-    console.error("❌ Manual add customer error:", err);
-    res.status(500).json({ 
-      error: "FAILED_TO_ADD_CUSTOMER",
-      details: err.message 
+    console.error("CREATE CUSTOMER FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_CREATE_CUSTOMER" });
+  }
+};
+
+export const updateCustomer = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateFields = req.body;
+
+    const customer = await CustomerMaster.findById(id);
+    if (!customer) {
+      return res.status(404).json({ error: "CUSTOMER_NOT_FOUND" });
+    }
+
+    // Update all provided fields
+    Object.keys(updateFields).forEach(key => {
+      if (updateFields[key] !== undefined) {
+        customer[key] = updateFields[key]?.toString().trim();
+      }
     });
+
+    await customer.save();
+    res.json({ success: true, customer });
+  } catch (err) {
+    console.error("UPDATE CUSTOMER FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_UPDATE_CUSTOMER" });
+  }
+};
+
+export const deleteCustomer = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deleted = await CustomerMaster.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: "CUSTOMER_NOT_FOUND" });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE CUSTOMER FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_DELETE_CUSTOMER" });
   }
 };
 
 /* =====================================================
-   ADD PRODUCT (MANUAL)
+   PRODUCTS – CRUD
 ===================================================== */
-export const addProduct = async (req, res) => {
-  const { productCode, productName, division } = req.body;
+
+export const getProducts = async (req, res) => {
   try {
-    console.log(`📦 Manual add product request: ${productName} (${productCode})`);
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 10);
+    const search = req.query.search || "";
+
+    const query = search
+      ? {
+          $or: [
+            { productName: { $regex: search, $options: "i" } },
+            { productCode: { $regex: search, $options: "i" } }
+          ]
+        }
+      : {};
+
+    const [data, total] = await Promise.all([
+      ProductMaster.find(query)
+        .sort({ productName: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+
+      ProductMaster.countDocuments(query)
+    ]);
+
+    res.json({
+      success: true,
+      data,
+      total,
+      page,
+      limit
+    });
+
+  } catch (err) {
+    console.error("GET PRODUCTS FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_FETCH_PRODUCTS" });
+  }
+};
+
+
+export const createProduct = async (req, res) => {
+  try {
+    const { productCode, productName, division } = req.body;
 
     if (!productCode || !productName) {
       return res.status(400).json({ error: "CODE_AND_NAME_REQUIRED" });
     }
 
-    const exists = await ProductMaster.findOne({ productCode: productCode.trim() });
+    const exists = await ProductMaster.findOne({
+      productCode: productCode.trim()
+    });
+
     if (exists) {
-      console.warn(`⚠️ Product already exists: ${productCode}`);
       return res.status(409).json({ error: "PRODUCT_ALREADY_EXISTS" });
     }
 
@@ -193,24 +547,53 @@ export const addProduct = async (req, res) => {
       division: division?.trim()
     });
 
-    console.log(`✅ Manually added product: ${productName}`);
     res.json({ success: true, product });
   } catch (err) {
-    console.error("❌ Manual add product error:", err);
-    res.status(500).json({ 
-      error: "FAILED_TO_ADD_PRODUCT",
-      details: err.message 
-    });
+    console.error("CREATE PRODUCT FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_CREATE_PRODUCT" });
   }
 };
 
-/* =====================================================
-   TRANSFER PRODUCT DIVISION
-===================================================== */
-export const transferProduct = async (req, res) => {
-  const { productCode, newDivision } = req.body;
+export const updateProduct = async (req, res) => {
   try {
-    console.log(`🔄 Transfer request: ${productCode} to division ${newDivision}`);
+    const { id } = req.params;
+    const { productName, division } = req.body;
+
+    const product = await ProductMaster.findById(id);
+    if (!product) {
+      return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
+    }
+
+    if (productName) product.productName = productName.trim();
+    if (division !== undefined) product.division = division.trim();
+
+    await product.save();
+    res.json({ success: true, product });
+  } catch (err) {
+    console.error("UPDATE PRODUCT FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_UPDATE_PRODUCT" });
+  }
+};
+
+export const deleteProduct = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deleted = await ProductMaster.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error("DELETE PRODUCT FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_DELETE_PRODUCT" });
+  }
+};
+
+export const transferProduct = async (req, res) => {
+  try {
+    const { productCode, newDivision } = req.body;
 
     if (!productCode || !newDivision) {
       return res.status(400).json({ error: "CODE_AND_DIVISION_REQUIRED" });
@@ -223,17 +606,126 @@ export const transferProduct = async (req, res) => {
     );
 
     if (!product) {
-      console.warn(`⚠️ Transfer failed: Product ${productCode} not found`);
       return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
     }
 
-    console.log(`✅ Product ${productCode} transferred to ${newDivision}`);
     res.json({ success: true, product });
   } catch (err) {
-    console.error("❌ Transfer error:", err);
-    res.status(500).json({ 
-      error: "TRANSFER_FAILED",
-      details: err.message 
+    console.error("TRANSFER PRODUCT FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_TRANSFER_PRODUCT" });
+  }
+};
+/* =====================================================
+   SCHEMES – READ ONLY (ADMIN)
+===================================================== */
+
+
+/* =====================================================
+   GET SCHEMES (PAGINATED)
+===================================================== */
+export const getSchemes = async (req, res) => {
+  try {
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 10);
+    const search = req.query.search || "";
+
+    const query = search
+      ? {
+          $or: [
+            { schemeCode: { $regex: search, $options: "i" } },
+            { schemeName: { $regex: search, $options: "i" } }
+          ]
+        }
+      : {};
+
+    const [data, total] = await Promise.all([
+      SchemeMaster.find(query)
+        .sort({ schemeCode: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+
+      SchemeMaster.countDocuments(query)
+    ]);
+
+    res.json({
+      success: true,
+      data,
+      total,
+      page,
+      limit
     });
+
+  } catch (err) {
+    console.error("GET SCHEMES FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_FETCH_SCHEMES" });
+  }
+};
+
+/* =====================================================
+   CREATE SCHEME
+===================================================== */
+export const createScheme = async (req, res) => {
+  try {
+    const { schemeCode, schemeName } = req.body;
+
+    if (!schemeCode || !schemeName) {
+      return res.status(400).json({ error: "CODE_AND_NAME_REQUIRED" });
+    }
+
+    const exists = await SchemeMaster.findOne({ schemeCode });
+    if (exists) {
+      return res.status(409).json({ error: "SCHEME_ALREADY_EXISTS" });
+    }
+
+    const scheme = await SchemeMaster.create(req.body);
+    res.json({ success: true, scheme });
+
+  } catch (err) {
+    console.error("CREATE SCHEME FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_CREATE_SCHEME" });
+  }
+};
+
+/* =====================================================
+   UPDATE SCHEME
+===================================================== */
+export const updateScheme = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const scheme = await SchemeMaster.findById(id);
+    if (!scheme) {
+      return res.status(404).json({ error: "SCHEME_NOT_FOUND" });
+    }
+
+    Object.assign(scheme, req.body);
+    await scheme.save();
+
+    res.json({ success: true, scheme });
+
+  } catch (err) {
+    console.error("UPDATE SCHEME FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_UPDATE_SCHEME" });
+  }
+};
+
+/* =====================================================
+   DELETE SCHEME
+===================================================== */
+export const deleteScheme = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const deleted = await SchemeMaster.findByIdAndDelete(id);
+    if (!deleted) {
+      return res.status(404).json({ error: "SCHEME_NOT_FOUND" });
+    }
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error("DELETE SCHEME FAILED:", err);
+    res.status(500).json({ error: "FAILED_TO_DELETE_SCHEME" });
   }
 };
