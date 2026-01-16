@@ -47,4 +47,3 @@ export const getMe = async (req, res) => {
     role: req.user.role,
   });
 };
-
