@@ -1,7 +1,5 @@
 {
-<<<<<<< HEAD
-=======
-<<<<<<< HEAD
+
       "name": "SaaS Dashboard UI Design",
       "version": "0.1.0",
       "private": true,
@@ -63,9 +61,8 @@
       "scripts": {
             "dev": "vite",
             "build": "vite build"
-      }
-=======
->>>>>>> e7e51a20153e4c1e501497f0a1f02df6170115bf
+      },
+
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",

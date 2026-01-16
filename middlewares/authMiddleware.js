@@ -1,42 +1,27 @@
 import jwt from "jsonwebtoken";
+import User from "../models/User.js";
 
-/* ======================================================
-   AUTH PROTECTION
-====================================================== */
-export const protect = (req, res, next) => {
+export const protect = async (req, res, next) => {
   let token;
- console.log("🔍 DECODED TOKEN:", decoded);
-  // 1️⃣ From Authorization header
+
   if (
     req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer ")
+    req.headers.authorization.startsWith("Bearer")
   ) {
-    token = req.headers.authorization.split(" ")[1];
-  }
+    try {
+      token = req.headers.authorization.split(" ")[1];
 
-  // 2️⃣ (Optional) From cookies
-  if (!token && req.cookies?.token) {
-    token = req.cookies.token;
-  }
+      // ✅ decoded MUST be declared
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-  if (!token) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+      req.user = await User.findById(decoded.id).select("-password");
 
-  if (!process.env.JWT_SECRET) {
-    console.error("❌ JWT_SECRET not configured");
-    return res.status(500).json({ message: "Server configuration error" });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-    // Expected payload: { id, email, role }
-    req.user = decoded;
-
-    next();
-  } catch (error) {
-    return res.status(401).json({ message: "Invalid or expired token" });
+      next();
+    } catch (error) {
+      res.status(401).json({ message: "Not authorized, token failed" });
+    }
+  } else {
+    res.status(401).json({ message: "Not authorized, no token" });
   }
 };
 
