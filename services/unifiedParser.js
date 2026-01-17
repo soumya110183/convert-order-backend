@@ -1,232 +1,201 @@
 import XLSX from "xlsx";
 import { extractTextFromPDFAdvanced } from "./pdfParser.js";
+import { detectCustomerFromInvoice } from "./customerDetector.js";
 
-/* ===================== HELPERS ===================== */
+/* =====================================================
+   ENHANCED DESCRIPTION EXTRACTION
+   Preserves: Dosage, Strength, Formulation, Pack Size
+===================================================== */
 
-function clean(text = "") {
-  return String(text).replace(/\s+/g, " ").trim();
+function extractDescriptionSmart(text) {
+  if (!text) return "";
+  
+  // Remove ONLY order-related noise, preserve medical info
+  const cleaned = text
+    .replace(/\b(?:QTY|QUANTITY|ORDER\s*QTY)[:\s]*\d+/gi, '')  // Remove qty labels
+    .replace(/\b(?:FREE|BONUS|SCHEME|SCH)\b/gi, '')             // Remove promotional text
+    .replace(/\bMICR\b/gi, '')                                   // Remove distributor name
+    .replace(/^\d+\s+/, '')                                      // Remove leading numbers (S.No)
+    .trim();
+  
+  // Normalize spaces but keep structure
+  const normalized = cleaned
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  return normalized;
 }
 
-/* ---------- CUSTOMER DETECTION ---------- */
-function detectCustomerGeneric(rows) {
-  if (!rows || rows.length === 0) return null;
-
-const HEADER_SCAN_LIMIT = 40;
-
-const businessKeywords = [
-  "PVT. LTD",
-  "PRIVATE LIMITED",
-  "ENTERPRISE",
-  "ENTERPRISES",
-  "ENTERPRAISE",
-  "ENTERPRAISES",
-  "AGENCIES",
-  "DISTRIBUTORS",
-  "DRUG HOUSE",
-  "PHARMA",
-  "MEDICALS"
-];
-
-const strongSignals = [
-  /GSTIN/i,
-  /D\.?L\.?\s*NO/i,
-  /DRUG LIC/i
-];
-
-const blockedPatterns = [
-  /^COMPANY NAME/i,
-  /^DIVISION/i,
-  /MICRO CARSYON/i,
-  /MICRO LABS/i,
-  /PAGE \d+ OF \d+/i
-];
-
-let collectedText = [];
-
-for (let i = 0; i < Math.min(rows.length, HEADER_SCAN_LIMIT); i++) {
-  const raw =
-    typeof rows[i] === "string"
-      ? rows[i]
-      : Object.values(rows[i] || {}).join(" ");
-
-  const text = clean(raw).toUpperCase();
-  if (!text) continue;
-
-  if (blockedPatterns.some(r => r.test(text))) continue;
-
-  const hasBusinessKeyword = businessKeywords.some(k => text.includes(k));
-  const hasStrongSignal = strongSignals.some(r => r.test(text));
-
-  if (hasBusinessKeyword || hasStrongSignal) {
-    collectedText.push(text.replace(/PURCHASE ORDER.*/gi, "").trim());
-    
-    // Stop if we have both signals
-    const combined = collectedText.join(" ");
-    const combinedHasKeyword = businessKeywords.some(k => combined.includes(k));
-    const combinedHasSignal = strongSignals.some(r => r.test(combined));
-    
-    if (combinedHasKeyword && combinedHasSignal && collectedText.length >= 1) {
-       // We have enough info
-       break;
-    }
-    
-    // Safety break
-    if (collectedText.length > 3) break;
-  }
-}
-
-const final = collectedText.join(" ");
-return final && final.length > 3 ? final : null;
-}
-
-
-/* ---------- ROW TYPE FILTER ---------- */
-function isJunkLine(text) {
-  const t = text.toUpperCase();
-  return (
-    t.includes("GST") ||
-    t.includes("DL NO") ||
-    t.includes("ADDRESS") ||
-    t.includes("PIN") ||
-    t.includes("ROAD") ||
-    t.includes("FLOOR") ||
-    t.includes("PURCHASE ORDER") ||
-    t.includes("INVOICE")
-  );
-}
-
-/* ---------- QUANTITY EXTRACTION ---------- */
+/**
+ * Extract quantity with validation
+ */
 function extractQtyLoose(text) {
   if (!text) return null;
-
+  
   const upper = text.toUpperCase();
-  if (isJunkLine(upper)) return null;
-
-  // QTY / QUANTITY / ORDER QTY
-  const keywordMatch = upper.match(/(?:QTY|QUANTITY)\D{0,5}(\d+)/);
-  if (keywordMatch) return Number(keywordMatch[1]);
-
-  // Fallback: last clean integer (not price, not PIN)
-  const tokens = upper.split(/\s+/);
+  
+  // Skip header/junk lines
+  if (/GST|DL NO|ADDRESS|PIN|ROAD|FLOOR|PURCHASE ORDER|INVOICE|SUBTOTAL|TOTAL|AMOUNT/i.test(upper)) {
+    return null;
+  }
+  
+  // Try keyword-based extraction first
+  const keywordMatch = upper.match(/(?:QTY|QUANTITY|ORDER\s*QTY)[:\s]*(\d+)/i);
+  if (keywordMatch) {
+    return Number(keywordMatch[1]);
+  }
+  
+  // Fallback: find last reasonable number
+  const tokens = text.split(/\s+/);
   for (let i = tokens.length - 1; i >= 0; i--) {
-    const t = tokens[i];
-    if (/^\d+$/.test(t)) {
-      const n = Number(t);
+    const token = tokens[i].replace(/[^\d]/g, '');
+    if (/^\d+$/.test(token)) {
+      const n = Number(token);
       if (n > 0 && n < 100000) return n;
     }
   }
-
+  
   return null;
 }
 
-/* ---------- DESCRIPTION EXTRACTION ---------- */
-function extractDescLoose(text) {
-  if (!text) return "";
 
-  const cleaned = text
-    .replace(/(?:QTY|QUANTITY)\D{0,5}\d+/gi, "")
-    .replace(/[,.:/-]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 
-  if (cleaned.length < 3 || isJunkLine(cleaned)) return "";
-  return cleaned;
-}
 
-/* ===================== MAIN ===================== */
+
+
+/* =====================================================
+   MAIN EXTRACTION FUNCTIONS
+===================================================== */
 
 export async function unifiedExtract(file) {
   const name = file.originalname.toLowerCase();
-
+  
   if (name.endsWith(".pdf")) return parsePDF(file);
   if (name.endsWith(".xls") || name.endsWith(".xlsx") || name.endsWith(".csv"))
     return parseExcel(file);
   if (name.endsWith(".txt")) return parseText(file);
-
-  return { dataRows: [], meta: {} };
+  
+  throw new Error("Unsupported file format");
 }
 
-/* ===================== PDF ===================== */
+/* =====================================================
+   PDF PARSER
+===================================================== */
 
 async function parsePDF(file) {
-  const { rows } = await extractTextFromPDFAdvanced(file.buffer);
-
-  // 1. Detect customer from unfiltered rows
-  const customerName = detectCustomerGeneric(rows.map(r => r.rawText));
-
-  // 2. Map and filter product rows
-  const dataRows = rows.map(r => {
-    const text = clean(r.rawText);
-    return {
-      ITEMDESC: extractDescLoose(text),
-      ORDERQTY: extractQtyLoose(text)
-    };
-  }).filter(r => r.ITEMDESC && r.ORDERQTY);
-
-  return { 
-    dataRows, 
-    meta: { customerName: customerName || "UNKNOWN" } 
+const { rows } = await extractTextFromPDFAdvanced(file.buffer);
+  
+  // 1. Detect customer from raw rows
+const customerName = detectCustomerFromInvoice(rows);
+  const dataRows = [];
+  
+  for (const row of rows) {
+    const text = row.rawText.trim();
+    if (!text || text.length < 5) continue;
+    
+    const qty = extractQtyLoose(text);
+    if (!qty) continue;
+    
+    const desc = extractDescriptionSmart(text);
+    if (!desc || desc.length < 3) continue;
+    
+    dataRows.push({
+      ITEMDESC: desc,
+      ORDERQTY: qty,
+      _rawText: text  // Keep original for debugging
+    });
+  }
+  
+  console.log(`📄 PDF Extracted: ${dataRows.length} items, Customer: ${customerName || 'UNKNOWN'}`);
+  
+  return {
+    dataRows,
+    meta: { customerName: customerName || "UNKNOWN" }
   };
 }
 
-/* ===================== EXCEL ===================== */
+/* =====================================================
+   EXCEL PARSER
+===================================================== */
 
 function parseExcel(file) {
   const wb = XLSX.read(file.buffer, { type: "buffer" });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-
-  // 1. Detect customer from unfiltered raw rows
+  
+  // 1. Detect customer
   const customerName = detectCustomerGeneric(rows);
-
-  let tableStarted = false;
+  
+  // 2. Extract product rows
   const dataRows = [];
-
+  let tableStarted = false;
+  
   for (const row of rows) {
-    const text = clean(Object.values(row).join(" "));
-    if (!text) continue;
-
+    const text = Object.values(row).join(" ").replace(/\s+/g, " ").trim();
+    if (!text || text.length < 5) continue;
+    
     const qty = extractQtyLoose(text);
-    const desc = extractDescLoose(text);
-
+    const desc = extractDescriptionSmart(text);
+    
     // Detect table start
-    if (!tableStarted && qty && desc) tableStarted = true;
+    if (!tableStarted && qty && desc) {
+      tableStarted = true;
+    }
+    
     if (!tableStarted) continue;
-
-    if (qty && desc) {
+    
+    if (qty && desc && desc.length >= 3) {
       dataRows.push({
         ITEMDESC: desc,
-        ORDERQTY: qty
+        ORDERQTY: qty,
+        _rawText: text
       });
     }
   }
-
+  
+  console.log(`📊 Excel Extracted: ${dataRows.length} items, Customer: ${customerName || 'UNKNOWN'}`);
+  
   return {
     dataRows,
-    meta: {
-      customerName: customerName || "UNKNOWN"
-    }
+    meta: { customerName: customerName || "UNKNOWN" }
   };
 }
 
-/* ===================== TEXT ===================== */
+/* =====================================================
+   TEXT PARSER
+===================================================== */
 
 function parseText(file) {
   const lines = file.buffer.toString("utf8").split(/\r?\n/);
-
-  // 1. Detect customer from raw lines
+  
+  // 1. Detect customer
   const customerName = detectCustomerGeneric(lines);
-
-  const dataRows = lines.map(line => {
-    const text = clean(line);
-    return {
-      ITEMDESC: extractDescLoose(text),
-      ORDERQTY: extractQtyLoose(text)
-    };
-  }).filter(r => r.ITEMDESC && r.ORDERQTY);
-
-  return { 
-    dataRows, 
-    meta: { customerName: customerName || "UNKNOWN" } 
+  
+  // 2. Extract product rows
+  const dataRows = [];
+  
+  for (const line of lines) {
+    const text = line.replace(/\s+/g, " ").trim();
+    if (!text || text.length < 5) continue;
+    
+    const qty = extractQtyLoose(text);
+    const desc = extractDescriptionSmart(text);
+    
+    if (qty && desc && desc.length >= 3) {
+      dataRows.push({
+        ITEMDESC: desc,
+        ORDERQTY: qty,
+        _rawText: text
+      });
+    }
+  }
+  
+  console.log(`📝 Text Extracted: ${dataRows.length} items, Customer: ${customerName || 'UNKNOWN'}`);
+  
+  return {
+    dataRows,
+    meta: { customerName: customerName || "UNKNOWN" }
   };
 }
+
+export default { unifiedExtract };

@@ -10,11 +10,15 @@ import ProductMaster from "../../models/productMaster.js";
 import MasterOrder from "../../models/masterOrder.js";
 import { readExcelSheets } from "../../utils/readExcels.js";
 import SchemeMaster from "../../models/schemeMaster.js";
+import { splitProduct } from "../../utils/splitProducts.js";
 
 
 /* =====================================================
    UTILITIES
 ===================================================== */
+function escapeRegex(text = "") {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 const findSheet = (sheets, keywords) =>
   Object.entries(sheets).find(([name]) =>
@@ -23,6 +27,9 @@ const findSheet = (sheets, keywords) =>
 
 const normalize = (v = "") =>
   v.toString().trim().toUpperCase();
+
+
+
 
 /* =====================================================
    MASTER DATABASE UPLOAD
@@ -38,104 +45,70 @@ export const uploadMasterDatabase = async (req, res) => {
 
     const sheets = readExcelSheets(req.file.buffer);
 
-   const customerRows =
-  Object.entries(sheets).find(([k]) =>
-    k.includes("customer")
-  )?.[1] || [];
+    const customerRows =
+      Object.entries(sheets).find(([k]) =>
+        k.toLowerCase().includes("customer")
+      )?.[1] || [];
 
-   const productRows =
-  Object.entries(sheets).find(([k]) =>
-    k.includes("sap") || k.includes("product")
-  )?.[1] || [];
-
+    const productRows =
+      Object.entries(sheets).find(([k]) =>
+        k.toLowerCase().includes("sap") || k.toLowerCase().includes("product")
+      )?.[1] || [];
 
     let inserted = { customers: 0, products: 0 };
     let updated = { customers: 0, products: 0 };
 
     /* ================= CUSTOMERS ================= */
-const customerOps = customerRows.map(r => {
-  const customerCode   = (r["customer code"] || r["code"] || r["sap code"])?.toString().trim();
-  const customerType   = (r["customer type"] || r["type"])?.toString().trim();
-  const customerName   = (r["customer name"] || r["name"])?.toString().trim();
-  const address1       = r["address 1"]?.toString().trim();
-  const address2       = r["address 2"]?.toString().trim();
-  const address3       = r["address 3"]?.toString().trim();
-  const city           = r["city"]?.toString().trim();
-  const pinCode        = r["pin code"]?.toString().trim();
-  const state          = r["state"]?.toString().trim();
-  const contactPerson  = r["contact person"]?.toString().trim();
-  const phoneNo1       = r["phone no1"]?.toString().trim();
-  const phoneNo2       = r["phone no2"]?.toString().trim();
-  const mobileNo       = r["mobile no"]?.toString().trim();
-  const drugLicNo      = r["drug lic no"]?.toString().trim();
-  const drugLicFromDt  = r["drug lic from dt"]?.toString().trim();
-  const drugLicToDt    = r["drug lic to dt"]?.toString().trim();
-  const drugLicNo1     = r["drug lic no1"]?.toString().trim();
-  const drugLicFromDt1 = r["drug lic from dt1"]?.toString().trim();
-  const drugLicToDt1   = r["drug lic to dt1"]?.toString().trim();
-  const gstNo          = r["gst no"]?.toString().trim();
-  const email          = r["e mail"]?.toString().trim();
+    const customerOps = customerRows.map(r => {
+      const customerCode = (r["customer code"] || r["code"] || r["sap code"])?.toString().trim();
+      const customerType = (r["customer type"] || r["type"])?.toString().trim();
+      const customerName = (r["customer name"] || r["name"])?.toString().trim();
+      const address1 = r["address 1"]?.toString().trim();
+      const address2 = r["address 2"]?.toString().trim();
+      const address3 = r["address 3"]?.toString().trim();
+      const city = r["city"]?.toString().trim();
+      const pinCode = r["pin code"]?.toString().trim();
+      const state = r["state"]?.toString().trim();
+      const contactPerson = r["contact person"]?.toString().trim();
+      const phoneNo1 = r["phone no1"]?.toString().trim();
+      const phoneNo2 = r["phone no2"]?.toString().trim();
+      const mobileNo = r["mobile no"]?.toString().trim();
+      const drugLicNo = r["drug lic no"]?.toString().trim();
+      const drugLicFromDt = r["drug lic from dt"]?.toString().trim();
+      const drugLicToDt = r["drug lic to dt"]?.toString().trim();
+      const drugLicNo1 = r["drug lic no1"]?.toString().trim();
+      const drugLicFromDt1 = r["drug lic from dt1"]?.toString().trim();
+      const drugLicToDt1 = r["drug lic to dt1"]?.toString().trim();
+      const gstNo = r["gst no"]?.toString().trim();
+      const email = r["e mail"]?.toString().trim();
 
-  if (!customerCode || !customerName) return null;
-
-  return {
-    updateOne: {
-      filter: { customerCode },
-     update: {
-  $set: {
-    customerType: customerType || "",
-    customerName: customerName || "",
-    address1,
-    address2,
-    address3,
-    city,
-    pinCode,
-    state,
-    contactPerson,
-    phoneNo1,
-    phoneNo2,
-    mobileNo,
-    drugLicNo,
-    drugLicFromDt,
-    drugLicToDt,
-    drugLicNo1,
-    drugLicFromDt1,
-    drugLicToDt1,
-    gstNo,
-    email
-  }
-},
-      upsert: true
-    }
-  };
-}).filter(Boolean);
-
-
-
-
- if (customerOps.length > 0) {
-  const result = await CustomerMaster.bulkWrite(customerOps, { session });
-  inserted.customers = result.upsertedCount || 0;
-  updated.customers = result.modifiedCount || 0;
-}
-
-
-    /* ================= PRODUCTS ================= */
-    const productOps = productRows.map(r => {
-      const productCode = r["sap code"]?.toString().trim();
-      const productName = r["item desc"]?.toString().trim();
-      const division    = r["dvn"]?.toString().trim();
-
-      if (!productCode || !productName) return null;
+      if (!customerCode || !customerName) return null;
 
       return {
         updateOne: {
-          filter: { productCode },
+          filter: { customerCode },
           update: {
             $set: {
-              productCode,
-              productName,
-              division
+              customerType: customerType || "",
+              customerName: customerName || "",
+              address1,
+              address2,
+              address3,
+              city,
+              pinCode,
+              state,
+              contactPerson,
+              phoneNo1,
+              phoneNo2,
+              mobileNo,
+              drugLicNo,
+              drugLicFromDt,
+              drugLicToDt,
+              drugLicNo1,
+              drugLicFromDt1,
+              drugLicToDt1,
+              gstNo,
+              email
             }
           },
           upsert: true
@@ -143,13 +116,106 @@ const customerOps = customerRows.map(r => {
       };
     }).filter(Boolean);
 
-    if (productOps.length) {
-      const r = await ProductMaster.bulkWrite(productOps, { session });
-      inserted.products = r.upsertedCount;
-      updated.products = r.modifiedCount;
+    if (customerOps.length > 0) {
+      const result = await CustomerMaster.bulkWrite(customerOps, { session });
+      inserted.customers = result.upsertedCount || 0;
+      updated.customers = result.modifiedCount || 0;
     }
 
+    /* ================= PRODUCTS ================= */
+    // In masterDataController.js - update product processing
+// In uploadMasterDatabase function, update productOps:
+const productOps = productRows.map(r => {
+  const productCode = r["sap code"]?.toString().trim();
+  const rawProductName = r["item desc"]?.toString().trim();
+  const division = r["dvn"]?.toString().trim();
 
+  if (!productCode || !rawProductName) return null;
+
+  const { name, strength } = splitProduct(rawProductName);
+
+  if (!name) {
+    console.warn(`❌ Invalid product skipped: ${rawProductName}`);
+    return null;
+  }
+
+  console.log(
+    `📦 Parsing: "${rawProductName}" → Name: "${name}", Strength: "${strength}"`
+  );
+const productOps = productRows
+  .map(r => {
+    const productCode = r["sap code"]?.toString().trim();
+    const rawProductName = r["item desc"]?.toString().trim();
+    const division = r["dvn"]?.toString().trim();
+
+    if (!productCode || !rawProductName) return null;
+
+    const { name, strength, variant } = splitProduct(rawProductName);
+
+    // ❗ Only skip if name itself is missing (rare)
+    if (!name) {
+      console.warn(`❌ Invalid product skipped: ${rawProductName}`);
+      return null;
+    }
+
+    // Build safe cleaned name (NO undefined)
+    const cleanedProductName = [name, strength, variant]
+      .filter(Boolean)
+      .join(" ");
+
+    console.log(
+      `📦 Parsing: "${rawProductName}" →`,
+      `Base="${name}", Strength="${strength || "-"}", Variant="${variant || "-"}"`
+    );
+
+    return {
+      updateOne: {
+        filter: { productCode },
+        update: {
+          $set: {
+            productCode,
+            productName: rawProductName, // original invoice-safe name
+            baseName: name,              // AMLONG
+            dosage: strength || null,    // 5 / 5/25 / null
+            variant: variant || null,    // HS / TRIO / INJ
+            cleanedProductName,          // AMLONG 5 MT
+            division: division || ""
+          }
+        },
+        upsert: true
+      }
+    };
+  })
+  .filter(Boolean);
+
+  return {
+    updateOne: {
+      filter: { productCode },
+      update: {
+        $set: {
+          productCode,
+          productName: rawProductName,
+          baseName: name,
+          dosage: strength,
+          variant: "",
+          cleanedProductName: `${name} ${strength}`,
+          division: division || ""
+        }
+      },
+      upsert: true
+    }
+  };
+}).filter(Boolean);
+
+
+    if (productOps.length) {
+      const result = await ProductMaster.bulkWrite(productOps, { session });
+      inserted.products = result.upsertedCount;
+      updated.products = result.modifiedCount;
+    }
+
+    // Need to refresh products for scheme matching
+    const allProducts = await ProductMaster.find({}).session(session).lean();
 
     /* ================= SCHEMES ================= */
     const schemeRows =
@@ -158,92 +224,169 @@ const customerOps = customerRows.map(r => {
       )?.[1] || [];
 
     console.log(`📊 Processing ${schemeRows.length} scheme rows...`);
-    if (schemeRows.length > 0) {
-      console.log("📝 Detected Headers/Keys:", Object.keys(schemeRows[0]));
-      console.log("📝 Sample Data Row:", JSON.stringify(schemeRows.find(r => Object.values(r).some(v => v)), null, 2));
-    }
-
+    
     let currentDivision = "";
     const schemeOps = [];
+    let skippedSchemes = 0;
 
-    schemeRows.forEach((r, idx) => {
-      // 1. Detect Division Header Row
-      const firstVal = Object.values(r).find(v => v?.toString().toUpperCase().includes("DIVISION :"))?.toString() || "";
-      if (firstVal.toUpperCase().includes("DIVISION :")) {
-        currentDivision = firstVal.split(":")[1]?.trim().toUpperCase();
+    for (const r of schemeRows) {
+      // 1. Detect Division Header
+      const rawRow = Object.values(r).join(' ');
+      if (rawRow.toUpperCase().includes("DIVISION :")) {
+        currentDivision = rawRow.split(":")[1]?.trim().toUpperCase();
         console.log(`📂 Switch Division: ${currentDivision}`);
-        return;
+        continue;
       }
 
-      // 2. Identify all "Product" column sets (e.g., product, product_1, product_2)
-      // We look for any key that normalized to 'product' or 'item desc'
-      const keys = Object.keys(r);
-      const productKeys = keys.filter(k => k.startsWith("product") || k.startsWith("item desc"));
+      // 2. Skip junk/header rows
+      const junkPattern = /^(NO\.?|DATE|INVOICE|BILL|GST|TOTAL|SUBTOTAL|AMOUNT|PAGE|PRODUCT|MIN QTY|FREE QTY|SCHEME)/i;
+      if (junkPattern.test(rawRow)) {
+        continue;
+      }
 
-      productKeys.forEach(pk => {
-        const suffix = pk.includes("_") ? pk.split("_")[1] : "";
-        const suffixStr = suffix ? `_${suffix}` : "";
+      // 3. Extract scheme data using your original format
+      // Looking for columns like: PRODUCT, MIN QTY, FREE QTY, SCHEME %
+      const productName = r["PRODUCT"] || r["Product"] || r["product"] || 
+                         r["ITEMDESC"] || r["ITEM DESC"] || r["item desc"];
+      
+      const rawMinQty = r["MIN QTY"] || r["MINQTY"] || r["Min Qty"] || r["min qty"];
+      const rawFreeQty = r["FREE QTY"] || r["FREEQTY"] || r["Free Qty"] || r["free qty"];
+      const rawSchemePercent = r["SCHEME %"] || r["SCHEME%"] || r["Scheme %"] || r["scheme %"] || 
+                              r["SCHEME PERCENT"] || r["scheme percent"];
 
-        const productName = r[pk]?.toString().trim().toUpperCase();
-        const minQty = Number(r[`min qty${suffixStr}`] || r[`minqty${suffixStr}`]) || 0;
-        const freeQty = Number(r[`free qty${suffixStr}`] || r[`freeqty${suffixStr}`]) || 0;
-        const schemePercent = Number(
-          r[`schme %${suffixStr}`] || 
-          r[`schime %${suffixStr}`] || 
-          r[`scheme %${suffixStr}`] || 
-          r[`percent${suffixStr}`]
-        ) || 0;
+      if (!productName) continue;
 
-        if (!productName || (minQty === 0 && freeQty === 0 && schemePercent === 0)) {
-          return;
+      // Clean and parse product name
+      const cleanProductName = productName.toString().trim();
+      const { name: baseName, strength: dosage, variant } = splitProduct(cleanProductName);
+      
+      const minQty = Number(rawMinQty) || 0;
+      const freeQty = Number(rawFreeQty) || 0;
+      const schemePercent = Number(rawSchemePercent) || 0;
+
+      if (minQty === 0 && freeQty === 0 && schemePercent === 0) {
+        skippedSchemes++;
+        continue;
+      }
+
+      // 4. Find matching product from master
+      // Try multiple matching strategies
+      let matchedProduct = null;
+      
+      // Strategy 1: Match by cleaned product name
+      const cleanedSearchName = [baseName, dosage, variant].filter(Boolean).join(' ').trim();
+      matchedProduct = allProducts.find(p => 
+        p.cleanedProductName?.toUpperCase() === cleanedSearchName.toUpperCase() &&
+        p.division?.toUpperCase() === currentDivision
+      );
+
+      // Strategy 2: Match by base name and dosage
+      if (!matchedProduct) {
+        matchedProduct = allProducts.find(p => 
+          p.baseName?.toUpperCase() === baseName.toUpperCase() &&
+          p.dosage === dosage &&
+          p.division?.toUpperCase() === currentDivision
+        );
+      }
+
+      // Strategy 3: Match by product name contains
+      if (!matchedProduct) {
+        matchedProduct = allProducts.find(p => 
+          p.productName?.toUpperCase().includes(baseName.toUpperCase()) &&
+          p.division?.toUpperCase() === currentDivision
+        );
+      }
+
+      if (!matchedProduct) {
+        console.warn(
+          `❌ Scheme skipped – product not found: ${cleanProductName} (${currentDivision})`
+        );
+        skippedSchemes++;
+        continue;
+      }
+
+      console.log(
+        `✅ Scheme mapped: ${matchedProduct.productCode} | ${matchedProduct.productName}`
+      );
+
+      // 5. Create scheme operation
+      schemeOps.push({
+        updateOne: {
+          filter: {
+            productCode: matchedProduct.productCode,
+            division: currentDivision
+          },
+          update: {
+            $set: {
+              productCode: matchedProduct.productCode,
+              productName: matchedProduct.productName,
+              minQty,
+              freeQty,
+              schemePercent,
+              division: currentDivision,
+              isActive: true
+            }
+          },
+          upsert: true
         }
-
-        console.log(`✅ Mapping: [${currentDivision || "N/A"}] ${productName} -> ${minQty}+${freeQty} (${schemePercent}%)`);
-
-        schemeOps.push({
-          updateOne: {
-            filter: { productName },
-            update: {
-              $set: {
-                productName,
-                minQty,
-                freeQty,
-                schemePercent,
-                division: currentDivision
-              }
-            },
-            upsert: true
-          }
-        });
       });
-    });
+    }
 
     console.log(`💾 Finalizing bulkWrite for ${schemeOps.length} schemes...`);
+    console.log(`⚠️ Skipped ${skippedSchemes} schemes due to missing products`);
+    
     if (schemeOps.length) {
       await SchemeMaster.bulkWrite(schemeOps, { session });
     }
 
-
-/* ✅ NOW COMMIT */
-await session.commitTransaction();
-session.endSession();
-
-
+    /* ✅ COMMIT TRANSACTION */
+    await session.commitTransaction();
+    session.endSession();
 
     res.json({
       success: true,
       message: "Master database uploaded successfully",
       inserted,
-      updated
+      updated,
+      schemesProcessed: schemeOps.length,
+      schemesSkipped: skippedSchemes
     });
 
   } catch (err) {
     await session.abortTransaction();
     session.endSession();
-    console.error(err);
-    res.status(500).json({ error: "MASTER_UPLOAD_FAILED", details: err.message });
+    console.error("❌ Master upload error:", err);
+    res.status(500).json({ 
+      error: "MASTER_UPLOAD_FAILED", 
+      details: err.message 
+    });
   }
 };
+
+// Helper function to extract pack size (add this outside the main function)
+function extractPackSize(desc) {
+  if (!desc) return null;
+  
+  const patterns = [
+    /\((\d+)\s*['`"]?\s*S?\)/i,    // (30'S)
+    /\b(\d+)\s*['`"]?\s*S\b/i,     // 30'S, 30S
+    /\bPACK\s*OF\s*(\d+)\b/i,      // PACK OF 10
+    /\b(\d+)\s*TABLETS?\b/i,       // 10 TABLETS
+    /\b(\d+)\s*CAPSULES?\b/i       // 10 CAPSULES
+  ];
+  
+  for (const pattern of patterns) {
+    const match = desc.match(pattern);
+    if (match) {
+      return {
+        value: parseInt(match[1], 10),
+        text: match[0]
+      };
+    }
+  }
+  
+  return null;
+}
 
 /* =====================================================
    EXPORT MASTER DATABASE
@@ -337,16 +480,19 @@ export const getCustomers = async (req, res) => {
     const limit = Number(req.query.limit || 10);
     const search = req.query.search || "";
 
-    const query = search
-      ? {
-          $or: [
-            { customerName: { $regex: search, $options: "i" } },
-            { customerCode: { $regex: search, $options: "i" } },
-            { city: { $regex: search, $options: "i" } },
-            { state: { $regex: search, $options: "i" } }
-          ]
-        }
-      : {};
+    const rawSearch = req.query.search || "";
+const safeSearch = escapeRegex(rawSearch);
+
+const query = safeSearch
+  ? {
+      $or: [
+        { customerName: { $regex: safeSearch, $options: "i" } },
+        { customerCode: { $regex: safeSearch, $options: "i" } },
+        { city: { $regex: safeSearch, $options: "i" } },
+        { state: { $regex: safeSearch, $options: "i" } }
+      ]
+    }
+  : {};
 
     const [data, total] = await Promise.all([
       CustomerMaster.find(query)
@@ -494,9 +640,11 @@ export const getProducts = async (req, res) => {
     const query = search
       ? {
           $or: [
-            { productName: { $regex: search, $options: "i" } },
-            { productCode: { $regex: search, $options: "i" } }
-          ]
+  { productName: { $regex: search, $options: "i" } },
+  { cleanedProductName: { $regex: search, $options: "i" } },
+  { productCode: { $regex: search, $options: "i" } }
+]
+
         }
       : {};
 
@@ -541,11 +689,17 @@ export const createProduct = async (req, res) => {
       return res.status(409).json({ error: "PRODUCT_ALREADY_EXISTS" });
     }
 
-    const product = await ProductMaster.create({
-      productCode: productCode.trim(),
-      productName: productName.trim(),
-      division: division?.trim()
-    });
+const { name, strength, variant } = splitProduct(productName);
+
+const product = await ProductMaster.create({
+  productCode: productCode.trim(),
+  baseName: name,
+  dosage: strength || null,
+  variant: variant || "",
+  productName: productName.trim(),
+  division: division?.trim()
+});
+
 
     res.json({ success: true, product });
   } catch (err) {

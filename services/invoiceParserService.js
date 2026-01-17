@@ -1,156 +1,298 @@
 import XLSX from "xlsx";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
+import { extractTextFromPDFAdvanced } from "./pdfParser.js";
+
+/* =====================================================
+   CRITICAL FIX: Separate Product Name from Quantity
+===================================================== */
 
 /**
- * INVOICE PARSER SERVICE
- * Extracts ONLY item identifiers and ORDERQTY from invoices
- * Does NOT create/modify master data
+ * Parse individual product line - FIXED VERSION
+ * Correctly separates: Product | Pack | Quantity
  */
-
-// Extract quantity from text
-function extractQty(text) {
-  const cleaned = String(text).replace(/free|bonus|sch/gi, "");
-  const match = cleaned.match(/\d+/);
-  if (!match) return 0;
+function parseProductLine(line) {
+  if (!line || line.length < 10) return null;
   
-  const qty = parseInt(match[0], 10);
-  return (qty > 0 && qty <= 100000) ? qty : 0;
-}
-
-// Normalize for matching
-function normalize(text) {
-  return String(text || "")
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, " ");
+  // Remove leading/trailing whitespace
+  const cleaned = line.trim();
+  
+  // CRITICAL: Extract quantity FIRST (from the end)
+  // Patterns: "50 +10FREE", "600", "7000 +", "30"
+  const qtyPattern = /(\d+)\s*(?:\+(\d*)FREE)?$/i;
+  const qtyMatch = cleaned.match(qtyPattern);
+  
+  if (!qtyMatch) return null;
+  
+  const orderQty = parseInt(qtyMatch[1], 10);
+  const freeQty = qtyMatch[2] ? parseInt(qtyMatch[2], 10) : 0;
+  
+  // Remove quantity from end to get product + pack
+  const withoutQty = cleaned.replace(qtyPattern, '').trim();
+  
+  // Extract pack info (10's *5, 15's *30, etc.)
+  const packPattern = /(\d+'?s?\s*(?:\*\s*\d+)?)\s*$/i;
+  const packMatch = withoutQty.match(packPattern);
+  
+  let packInfo = "";
+  let productName = withoutQty;
+  
+  if (packMatch) {
+    packInfo = packMatch[1].trim();
+    productName = withoutQty.replace(packPattern, '').trim();
+  }
+  
+  // Clean product name (remove ** markers, extra spaces)
+  productName = productName
+    .replace(/\*\*+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  
+  // Validate
+  if (!productName || productName.length < 3 || orderQty <= 0) {
+    return null;
+  }
+  
+  return {
+    ITEMDESC: productName,  // Just the product name, no pack or qty
+    ORDERQTY: orderQty,
+    FREE_QTY: freeQty,
+    PACK_INFO: packInfo,
+    _rawLine: line
+  };
 }
 
 /**
- * Parse PDF invoice
- * Returns array of { itemIdentifier, sapcode, orderqty }
+ * Parse tabular invoice format
  */
-export async function parsePDFInvoice(buffer) {
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
-  const items = [];
+function parseTabularFormat(text) {
+  if (!text) return [];
+  
+  const lines = text.split(/\r?\n/);
+  const products = [];
+  
+  let inDataSection = false;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    
+    // Detect table header
+    if (/Code\s+Product\s+Pack\s+Order/i.test(line)) {
+      inDataSection = true;
+      continue;
+    }
+    
+    // Detect table end
+    if (/TOTAL\s+VALUE|Despatch\s+Date|Authorised/i.test(line)) {
+      break;
+    }
+    
+    // Skip separator lines
+    if (/^-+$/.test(line)) continue;
+    
+    // Only process data section
+    if (!inDataSection) continue;
+    
+    // Parse product line
+    const parsed = parseProductLine(line);
+    if (parsed) {
+      products.push(parsed);
+      console.log(`✓ Parsed: "${parsed.ITEMDESC}" | Qty: ${parsed.ORDERQTY}${parsed.FREE_QTY ? ` +${parsed.FREE_QTY}` : ''}`);
+    }
+  }
+  
+  return products;
+}
 
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    const text = content.items.map(item => item.str).join(" ");
+/**
+ * Enhanced customer detection
+ */
+function detectCustomerGeneric(lines) {
+  if (!lines || lines.length === 0) return null;
+  
+  const businessKeywords = [
+    "ENTERPRISES", "ENTERPRISE",
+    "PVT. LTD", "PRIVATE LIMITED", "PVT LTD",
+    "AGENCIES", "AGENCY",
+    "DISTRIBUTORS", "DISTRIBUTOR",
+    "DRUG HOUSE", "PHARMA", "MEDICALS"
+  ];
+  
+  const strongSignals = [
+    /GSTIN/i,
+    /FSSAI/i,
+    /D\.?\s*L\.?\s*NO/i,
+    /DRUG\s*LIC/i
+  ];
+  
+  const blockedPatterns = [
+    /MICRO LABS/i,
+    /RAJ DISTRIBUTORS/i, // This is the seller, not buyer
+    /PAGE \d+ OF \d+/i,
+    /^CODE\s+PRODUCT/i,
+    /Order Form/i
+  ];
+  
+  for (let i = 0; i < Math.min(lines.length, 30); i++) {
+    const line = lines[i].trim().toUpperCase();
+    if (!line || line.length < 5) continue;
     
-    // Simple line-by-line extraction
-    const lines = text.split(/\r?\n/).filter(l => l.trim());
+    // Skip blocked
+    if (blockedPatterns.some(r => r.test(line))) continue;
     
-    for (const line of lines) {
-      const tokens = line.split(/\s+/);
+    const hasKeyword = businessKeywords.some(k => line.includes(k));
+    const hasSignal = strongSignals.some(r => r.test(line));
+    
+    if (hasKeyword || hasSignal) {
+      // Extract customer name (just the business entity)
+      const words = line.split(/\s+/);
+      const keywordIndex = words.findIndex(w => 
+        businessKeywords.some(k => w.includes(k))
+      );
       
-      // Find quantity (scan from right)
-      let qty = 0;
-      for (let j = tokens.length - 1; j >= 0; j--) {
-        qty = extractQty(tokens[j]);
-        if (qty > 0) break;
+      if (keywordIndex >= 0) {
+        // Take words up to and including the keyword
+        const customerName = words.slice(0, keywordIndex + 1).join(' ');
+        if (customerName.length > 3) {
+          return customerName;
+        }
       }
       
-      if (qty === 0) continue;
-      
-      // Extract identifier (remaining tokens)
-      const itemIdentifier = normalize(tokens.slice(0, -1).join(" "));
-      if (itemIdentifier.length < 3) continue;
-      
-      items.push({
-        itemIdentifier,
-        sapcode: "", // Extract if pattern found
-        orderqty: qty
-      });
+      // Fallback: first meaningful part
+      const firstPart = line.split(/\s{2,}|,/)[0];
+      if (firstPart && firstPart.length > 3) {
+        return firstPart;
+      }
     }
   }
-
-  await pdf.destroy();
-  return items;
+  
+  return null;
 }
 
 /**
- * Parse Excel invoice
+ * Fallback: Line-by-line extraction
  */
-export async function parseExcelInvoice(buffer) {
-  const workbook = XLSX.read(buffer, { type: "buffer" });
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(sheet);
-
-  const items = [];
-
-  for (const row of rows) {
-    // Find item description (check common column names)
-    const itemIdentifier = normalize(
-      row.ITEMDESC || row["ITEM DESC"] || row["Item Description"] ||
-      row.PRODUCT || row["Product Name"] || ""
-    );
-
-    // Find quantity
-    const orderqty = extractQty(
-      row.ORDERQTY || row["ORDER QTY"] || row.QTY || row.Quantity || 0
-    );
-
-    if (!itemIdentifier || orderqty === 0) continue;
-
-    const sapcode = normalize(
-      row.SAPCODE || row["SAP CODE"] || row.CODE || ""
-    );
-
-    items.push({ itemIdentifier, sapcode, orderqty });
-  }
-
-  return items;
-}
-
-/**
- * Parse text invoice
- */
-export async function parseTextInvoice(buffer) {
-  const text = buffer.toString("utf8");
-  const lines = text.split(/\r?\n/).filter(l => l.trim());
-
-  const items = [];
-
+function extractLineByLine(lines) {
+  const products = [];
+  
   for (const line of lines) {
-    const tokens = line.split(/\s+/);
-    
-    let qty = 0;
-    for (let j = tokens.length - 1; j >= 0; j--) {
-      qty = extractQty(tokens[j]);
-      if (qty > 0) break;
+    const parsed = parseProductLine(line);
+    if (parsed) {
+      products.push(parsed);
     }
-    
-    if (qty === 0) continue;
-    
-    const itemIdentifier = normalize(tokens.slice(0, -1).join(" "));
-    if (itemIdentifier.length < 3) continue;
-    
-    items.push({ itemIdentifier, sapcode: "", orderqty: qty });
   }
-
-  return items;
+  
+  return products;
 }
 
-/**
- * Main entry point
- */
-export async function parseInvoice(file) {
-  const filename = (file.originalname || "").toLowerCase();
+/* =====================================================
+   MAIN PARSERS
+===================================================== */
 
-  if (filename.endsWith(".pdf")) {
-    return parsePDFInvoice(file.buffer);
+async function parsePDF(file) {
+  const { rows, lines } = await extractTextFromPDFAdvanced(file.buffer);
+  
+  const customerName = detectCustomerGeneric(lines);
+  const fullText = lines.join('\n');
+  let dataRows = parseTabularFormat(fullText);
+  
+  if (dataRows.length === 0) {
+    dataRows = extractLineByLine(lines);
   }
-
-  if (filename.endsWith(".xls") || filename.endsWith(".xlsx")) {
-    return parseExcelInvoice(file.buffer);
-  }
-
-  if (filename.endsWith(".txt")) {
-    return parseTextInvoice(file.buffer);
-  }
-
-  throw new Error("UNSUPPORTED_FILE_FORMAT");
+  
+  console.log(`📄 PDF: ${dataRows.length} items | Customer: ${customerName || 'UNKNOWN'}`);
+  
+  return {
+    dataRows,
+    meta: { customerName: customerName || "UNKNOWN" }
+  };
 }
 
-export default { parseInvoice };
+function parseText(file) {
+  const text = file.buffer.toString("utf8");
+  const lines = text.split(/\r?\n/);
+  
+  const customerName = detectCustomerGeneric(lines);
+  let dataRows = parseTabularFormat(text);
+  
+  if (dataRows.length === 0) {
+    dataRows = extractLineByLine(lines);
+  }
+  
+  console.log(`📝 TXT: ${dataRows.length} items | Customer: ${customerName || 'UNKNOWN'}`);
+  
+  return {
+    dataRows,
+    meta: { customerName: customerName || "UNKNOWN" }
+  };
+}
+
+function parseExcel(file) {
+  const wb = XLSX.read(file.buffer, { type: "buffer" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(ws, { defval: "", header: 1 });
+  
+  const customerName = detectCustomerGeneric(rows.map(r => r.join(' ')));
+  const text = rows.map(r => r.join('    ')).join('\n');
+  let dataRows = parseTabularFormat(text);
+  
+  if (dataRows.length === 0) {
+    dataRows = extractLineByLine(rows.map(r => r.join(' ')));
+  }
+  
+  console.log(`📊 EXCEL: ${dataRows.length} items | Customer: ${customerName || 'UNKNOWN'}`);
+  
+  return {
+    dataRows,
+    meta: { customerName: customerName || "UNKNOWN" }
+  };
+}
+
+/* =====================================================
+   MAIN EXPORT
+===================================================== */
+
+export async function unifiedExtract(file) {
+  const name = file.originalname.toLowerCase();
+  
+  if (name.endsWith(".pdf")) return parsePDF(file);
+  if (name.endsWith(".txt")) return parseText(file);
+  if (name.endsWith(".xls") || name.endsWith(".xlsx") || name.endsWith(".csv"))
+    return parseExcel(file);
+  
+  throw new Error("Unsupported file format");
+}
+
+export default { unifiedExtract };
+
+/* =====================================================
+   TEST FUNCTION
+===================================================== */
+
+export function testInvoice() {
+  const sampleInvoice = `
+         DOLO 1000                                10's *5             50 +10FREE    
+         DOLO 500  **                             15's *30           600            
+         DOLO 650  **                             15's *30          7000 +FREE      
+         DOLO-TH 4                                10's *3             50 +10FREE    
+         EBAST-10                                 15's *15           200 +40FREE    
+         EBAST-DC                                 10's *30           200 +40FREE    
+         MICRODOX- LBX                            10's *5            200 +40FREE    
+         MICRONASE-NS  Spray                      1's                 30            
+         PULMUCUS-600                             10''s               50 +10FREE    
+         SILYBON-70                               10's *30           200 +40FREE    
+  `;
+  
+  const products = parseTabularFormat(sampleInvoice);
+  
+  console.log('\n=== EXTRACTED PRODUCTS ===\n');
+  products.forEach((p, i) => {
+    console.log(`${i + 1}. Product: "${p.ITEMDESC}"`);
+    console.log(`   Qty: ${p.ORDERQTY}${p.FREE_QTY ? ` +${p.FREE_QTY} FREE` : ''}`);
+    console.log(`   Pack: ${p.PACK_INFO || 'N/A'}`);
+    console.log('');
+  });
+  
+  return products;
+}
+
+// testInvoice();

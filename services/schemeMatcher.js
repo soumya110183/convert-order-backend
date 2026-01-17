@@ -1,38 +1,30 @@
-export function applyScheme({
-  productCode,
-  customerCode,
-  orderQty,
-  schemes
-}) {
-  const now = new Date();
-
-  const applicable = schemes.find(s =>
-    s.isActive &&
-    (!s.validFrom || now >= new Date(s.validFrom)) &&
-    (!s.validTo || now <= new Date(s.validTo)) &&
-    (s.applicableProducts?.includes(productCode)) &&
-    (
-      !s.applicableCustomers?.length ||
-      s.applicableCustomers.includes(customerCode)
-    ) &&
-    s.buyQty > 0 &&
-    s.freeQty > 0
+// schemeMatcher.js - FIXED VERSION
+export function applyScheme({ productCode, orderQty, schemes }) {
+  if (!schemes?.length) return { freeQty: 0 };
+  
+  // Find scheme for this product
+  const scheme = schemes.find(s => 
+    s.productCode === productCode && 
+    orderQty >= (s.minQty || 0)
   );
-
-  if (!applicable) {
-    return {
-      schemeCode: "",
-      schemeName: "",
-      freeQty: 0
-    };
+  
+  if (!scheme) return { freeQty: 0 };
+  
+  // Calculate free quantity
+  let freeQty = 0;
+  
+  if (scheme.schemePercent > 0) {
+    // Percentage-based scheme
+    freeQty = Math.floor(orderQty * scheme.schemePercent);
+  } else if (scheme.freeQty > 0 && scheme.minQty > 0) {
+    // Buy X get Y free
+    const batches = Math.floor(orderQty / scheme.minQty);
+    freeQty = batches * scheme.freeQty;
   }
-
-  const freeQty =
-    Math.floor(orderQty / applicable.buyQty) * applicable.freeQty;
-
+  
   return {
-    schemeCode: applicable.schemeCode,
-    schemeName: applicable.schemeName,
-    freeQty
+    freeQty,
+    schemePercent: scheme.schemePercent || 0,
+    schemeApplied: !!scheme
   };
 }
