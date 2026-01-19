@@ -1,7 +1,7 @@
 // utils/cleanProductName.js
 
 const FORM_WORDS =
-  /\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|SYRUP|SUSPENSION|INJ|INJECTION|SPRAY|DROPS?|ORAL|FORTE)\b/gi;
+  /\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|SYRUP|SUSPENSION|INJ|INJECTION|SPRAY|DROPS?|ORAL)\b/gi;
 
 const PACK_PATTERNS = [
   /\(\s*\d+\s*['`"]?\s*S\s*\)/gi,     // (30'S)

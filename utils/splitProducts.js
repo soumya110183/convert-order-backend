@@ -1,3 +1,4 @@
+
 const FORM_WORDS =
   /\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION|SYRUP|SUSPENSION|DROPS?|CREAM|GEL|SPRAY)\b/gi;
 
@@ -11,6 +12,12 @@ export function splitProduct(raw = "") {
 
   let text = raw.toUpperCase();
 
+  // 🔥 REMOVE DISTRIBUTOR / LOCATION FIRST
+  text = text
+    .replace(/^MICRO\d*\s+MICRO\s+/g, "")
+    .replace(/\(.*?\)/g, "")
+    .replace(/\bRAJ\b|\bDIST(RI(BUT)?)?\b/g, "");
+
   /* remove pack info ONLY */
   text = text.replace(/\(\s*\d+\s*['`"]?\s*S\s*\)/gi, " ");
 
@@ -23,14 +30,14 @@ export function splitProduct(raw = "") {
   let strength = "";
   let variant = "";
 
-  /* combo dosage (100/10 etc) */
+  /* combo dosage */
   const combo = text.match(/\b\d+(\.\d+)?\/\d+(\.\d+)?\b/);
   if (combo) {
     strength = combo[0];
     text = text.replace(combo[0], " ");
   }
 
-  /* unit dosage (MG, GM) */
+  /* unit dosage */
   if (!strength) {
     const unit = text.match(/\b\d+(\.\d+)?\s*(MG|GM|MCG|IU)\b/);
     if (unit) {
@@ -39,16 +46,7 @@ export function splitProduct(raw = "") {
     }
   }
 
-  /* plain numeric strength (650, 250, 1000) */
-  if (!strength) {
-    const num = text.match(/\b\d+(\.\d+)?\b/);
-    if (num) {
-      strength = num[0];
-      text = text.replace(num[0], " ");
-    }
-  }
-
-  /* extract variant */
+  /* variant */
   for (const v of VARIANTS) {
     const r = new RegExp(`\\b${v}\\b`);
     if (r.test(text)) {

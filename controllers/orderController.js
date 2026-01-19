@@ -1,10 +1,14 @@
 /**
- * ORDER CONTROLLER - FINAL PRODUCTION VERSION
- * Compatible with your ProductMaster schema
+ * ORDER CONTROLLER - FIXED VERSION
+ * ✅ Fixes:
+ * 1. Pack calculation: PACK = Math.ceil(ORDERQTY / BOX PACK)
+ * 2. BOX PACK from ProductMaster DB (fixed value)
+ * 3. Customer detection and auto-selection
  */
 
 import OrderUpload from "../models/orderUpload.js";
-import XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
+
 import crypto from "crypto";
 import path from "path";
 import fs from "fs";
@@ -16,25 +20,20 @@ import SchemeMaster from "../models/schemeMaster.js";
 import { applyScheme } from "../services/schemeMatcher.js";
 import {
   stripLeadingCodes,
-  cleanInvoiceDesc,
-  isJunkLine,
-  similarity
+  cleanInvoiceDesc
 } from "../utils/invoiceUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
+import { matchCustomerSmart, stringSimilarity } from "../services/customerMatcher.js";
 
 /* =====================================================
    TEMPLATE COLUMNS
 ===================================================== */
-
 const TEMPLATE_COLUMNS = [
   "CODE",
   "CUSTOMER NAME",
   "SAPCODE",
   "ITEMDESC",
   "ORDERQTY",
-  "FREE_QTY",
-  "SCHEME_CODE",
-  "SCHEME_NAME",
   "BOX PACK",
   "PACK",
   "DVN"
@@ -72,73 +71,9 @@ function isHardJunkLine(text = "") {
   );
 }
 
-function extractPackSize(desc = "") {
-  const patterns = [
-    /\((\d+)\s*['`"]?\s*S\)/i,
-    /\b(\d+)\s*['`"]?\s*S\b/i,
-    /\b(\d+)\s*(TAB|TABS)\b/i,
-    /\b(\d+)\s*(CAP|CAPS)\b/i,
-    /\b(\d+)\s*ML\b/i
-  ];
-  for (const rx of patterns) {
-    const m = desc.match(rx);
-    if (m) return Number(m[1]);
-  }
-  return 0;
-}
-
-function normalizePack(n) {
-  const v = Number(n);
-  if (!v || v <= 0) return 0;
-  return Math.round(v);
-}
-
-function calcBoxPack(qty, pack) {
-  if (!qty || !pack) return 0;
-  return Math.ceil(qty / pack);
-}
-
-function matchCustomerSmart(invoiceName, customers) {
-  if (!invoiceName) return { auto: null, candidates: [] };
-
-  const inv = invoiceName.toUpperCase();
-
-  const matches = customers.filter(c => {
-    const name = c.customerName?.toUpperCase();
-    return name && (
-      inv === name ||
-      inv.includes(name) ||
-      name.includes(inv)
-    );
-  });
-
-  // ✅ SAFE AUTO-PICK ONLY IF UNIQUE
-  if (matches.length === 1) {
-    return { auto: matches[0], candidates: [] };
-  }
-
-  // ⚠️ MULTIPLE → USER MUST PICK
-  if (matches.length > 1) {
-    return {
-      auto: null,
-      candidates: matches.map(c => ({
-        customerCode: c.customerCode,
-        customerName: c.customerName,
-        city: c.city,
-        state: c.state
-      }))
-    };
-  }
-
-  return { auto: null, candidates: [] };
-}
-
-
-
 /* =====================================================
    EXTRACT ORDER FIELDS
 ===================================================== */
-
 export const extractOrderFields = async (req, res, next) => {
   try {
     if (!req.file) {
@@ -155,71 +90,71 @@ export const extractOrderFields = async (req, res, next) => {
     );
     const customers = await CustomerMaster.find({}).lean();
 
-  const matchedCustomer = matchCustomerSmart(
-  extracted.meta?.customerName,
-  customers
-);
+    // ✅ CUSTOMER MATCHING WITH AUTO-SELECTION
+    const matchResult = matchCustomerSmart(
+      extracted.meta?.customerName,
+      customers
+    );
 
-    const CUSTOMER_NAME = matchedCustomer?.customerName || extracted.meta?.customerName || "UNKNOWN";
-    const CUSTOMER_CODE = matchedCustomer?.customerCode || "";
+    console.log('🔍 Customer Match Result:', {
+      source: matchResult.source,
+      confidence: matchResult.confidence,
+      autoSelected: matchResult.auto?.customerName || 'NONE'
+    });
 
     const validRows = [];
     const failedMatches = [];
 
     for (const row of extracted.dataRows) {
-  const qty = Number(row.ORDERQTY);
-  if (!qty || qty <= 0) continue;
+      const qty = Number(row.ORDERQTY);
+      if (!qty || qty <= 0) continue;
 
-  let raw = stripLeadingCodes(row.ITEMDESC || "");
-  let cleaned = cleanInvoiceDesc(raw);
+      let raw = stripLeadingCodes(row.ITEMDESC || "");
+      let cleaned = cleanInvoiceDesc(raw);
 
-  if (!cleaned || cleaned.length < 3) continue;
-  if (isHardJunkLine(cleaned)) continue;
+      if (!cleaned || cleaned.length < 3) continue;
+      if (isHardJunkLine(cleaned)) continue;
 
-  const match = matchProductSmart(cleaned, products);
+      const match = matchProductSmart(cleaned, products);
 
-  if (!match) {
-    failedMatches.push({ raw: row.ITEMDESC, cleaned });
-    continue;
-  }
+      if (!match) {
+        console.warn(`❌ No match for: "${cleaned}"`);
+        failedMatches.push({ raw: row.ITEMDESC, cleaned });
+        continue;
+      }
 
-  // ---------------- PACK RESOLUTION ----------------
-  let pack = extractPackSize(row.ITEMDESC);
+      // ✅ BOX PACK FROM MASTER DB (FIXED VALUE)
+      const boxPack = match.boxPack || 0;
+      
+      // ✅ PACK CALCULATION: ceil(QTY / BOX PACK)
+      // Example: QTY=20, BOX PACK=10 → PACK=2
+      // Example: QTY=25, BOX PACK=10 → PACK=3
+      const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
 
-  if (!pack && match?.productName) {
-    pack = extractPackSize(match.productName);
-  }
+      console.log(`✅ Matched: ${match.productCode} | QTY=${qty}, BoxPack=${boxPack}, Pack=${pack}`);
 
-  if (!pack && match?.pack) {
-    pack = normalizePack(match.pack);
-  }
-
-  if (!pack || pack <= 0) {
-    pack = 1;
-  }
-
-  // ---------------- PUSH ROW ----------------
-  validRows.push({
-    ITEMDESC: cleaned,          // invoice text
-    ORDERQTY: qty,
-    matchedProduct: {
-      _id: match._id,
-      productCode: match.productCode,
-      productName: match.productName,
-      cleanedProductName: match.cleanedProductName,
-      baseName: match.baseName,
-      dosage: match.dosage,
-      variant: match.variant,
-      division: match.division,
-      confidence: match.confidence
-    },
-    SAPCODE: match.productCode,
-    PACK: pack,
-    "BOX PACK": calcBoxPack(qty, pack),
-    DVN: match.division || ""
-  });
-}
-
+      validRows.push({
+        ITEMDESC: cleaned,
+        ORDERQTY: qty,
+        matchedProduct: {
+          _id: match._id,
+          productCode: match.productCode,
+          productName: match.productName,
+          cleanedProductName: match.cleanedProductName,
+          baseName: match.baseName,
+          dosage: match.dosage,
+          variant: match.variant,
+          division: match.division,
+          confidence: match.confidence,
+          pack: pack,           // Calculated
+          boxPack: boxPack      // From master DB
+        },
+        SAPCODE: match.productCode,
+        PACK: pack,             // ✅ CALCULATED
+        "BOX PACK": boxPack,    // ✅ FROM MASTER DB
+        DVN: match.division || ""
+      });
+    }
 
     if (!validRows.length) {
       return res.status(422).json({
@@ -241,19 +176,31 @@ export const extractOrderFields = async (req, res, next) => {
       fileHash,
       status: "EXTRACTED",
       extractedData: { dataRows: validRows },
-      failedMatches
+      failedMatches,
+      // ✅ STORE MATCHED CUSTOMER INFO
+      customerCode: matchResult.auto?.customerCode || null,
+      customerName: matchResult.auto?.customerName || extracted.meta?.customerName || "UNKNOWN"
     });
 
+    // ✅ RETURN CUSTOMER WITH PROPER AUTO-SELECTION
     res.json({
       success: true,
       uploadId: upload._id,
       dataRows: validRows,
-   customer: {
-  name: matchedCustomer?.customerName || extracted.meta?.customerName,
-  code: matchedCustomer?.customerCode || "",
-  confidence: matchedCustomer?.confidence || 0,
-  needsConfirmation: matchedCustomer?.confidence < 0.85
-},
+      customer: {
+        name: matchResult.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
+        code: matchResult.auto?.customerCode || "",
+        city: matchResult.auto?.city || "",
+        state: matchResult.auto?.state || "",
+        source: matchResult.source,
+        confidence: matchResult.confidence || 0,
+        candidates: matchResult.candidates || [],
+        needsConfirmation: matchResult.source === 'MANUAL_REQUIRED',
+        // ✅ FULL CUSTOMER OBJECT FOR FRONTEND
+        _autoCustomer: matchResult.auto || null,
+        // ✅ FLAG TO SHOW IF CUSTOMER WAS AUTO-SELECTED
+        autoSelected: matchResult.source === 'EXACT' || matchResult.source === 'FUZZY_AUTO'
+      },
       failedCount: failedMatches.length
     });
 
@@ -262,13 +209,73 @@ export const extractOrderFields = async (req, res, next) => {
     next(err);
   }
 };
+const headerStyle = {
+  font: { bold: true, color: { rgb: "FFFFFF" } },
+  fill: {
+    patternType: "solid",
+    fgColor: { rgb: "8B0000" } // dark red
+  },
+  alignment: {
+    vertical: "center",
+    horizontal: "center"
+  },
+  border: {
+    top: { style: "thin" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" }
+  }
+};
+
+const normalCellStyle = {
+  border: {
+    top: { style: "thin" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" }
+  }
+};
+
+const qtyCellStyle = {
+  fill: {
+    patternType: "solid",
+    fgColor: { rgb: "FFFF99" } // light yellow
+  },
+  alignment: { horizontal: "center" },
+  border: {
+    top: { style: "thin" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" }
+  }
+};
+
+const schemeRowStyle = {
+  fill: {
+    patternType: "solid",
+    fgColor: { rgb: "FFFF00" } // bright yellow
+  },
+  border: {
+    top: { style: "thin" },
+    bottom: { style: "thin" },
+    left: { style: "thin" },
+    right: { style: "thin" }
+  }
+};
+
 /* =====================================================
    CONVERT ORDERS
 ===================================================== */
-
 export const convertOrders = async (req, res, next) => {
   try {
-    const { uploadId } = req.body;
+    const { uploadId, customerCode } = req.body;
+
+    if (!customerCode) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Customer code is required" 
+      });
+    }
     
     const upload = await OrderUpload.findOne({ 
       _id: uploadId, 
@@ -278,13 +285,26 @@ export const convertOrders = async (req, res, next) => {
     if (!upload) {
       return res.status(404).json({ message: "Upload not found" });
     }
+
+    // ✅ FETCH CUSTOMER FROM MASTER
+    const customer = await CustomerMaster.findOne({ customerCode }).lean();
+    if (!customer) {
+      return res.status(404).json({ 
+        success: false, 
+        message: "Customer not found in master database" 
+      });
+    }
     
     const sourceRows = upload.extractedData.dataRows;
-    const schemes = await SchemeMaster.find({ isActive: true }).lean();
+   const schemes = await SchemeMaster.find({ isActive: true }).lean();
+console.log("🔥 SCHEMES FOUND FOR CONVERSION:", schemes.length);
+
     
     const output = [];
     const errors = [];
-    
+    const schemeRows = [];
+let totalFreeQty = 0;
+
     sourceRows.forEach((row, idx) => {
       const qty = Number(row.ORDERQTY);
       if (isNaN(qty) || qty <= 0) {
@@ -296,24 +316,57 @@ export const convertOrders = async (req, res, next) => {
         return;
       }
       
-      // Apply schemes (if configured)
-      const schemeResult = applyScheme({
-        productCode: row.SAPCODE,
-        customerCode: row.CODE,
-        orderQty: qty,
-        schemes
-      });
+      // ✅ GET BOX PACK FROM MATCHED PRODUCT (FROM MASTER DB)
+      const boxPack = row["BOX PACK"] || 0;
       
-      output.push({
-        CODE: row.CODE || "",
-        "CUSTOMER NAME": row["CUSTOMER NAME"] || "UNKNOWN",
-        SAPCODE: row.SAPCODE || "",
-        ITEMDESC: row.ITEMDESC,
-        ORDERQTY: qty,
-        "BOX PACK": row["BOX PACK"],
-        PACK: row.PACK,
-        DVN: row.DVN || ""
-      });
+      // ✅ RECALCULATE PACK: ceil(QTY / BOX PACK)
+      const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
+      
+      // ✅ APPLY SCHEME (internal only)
+     const schemeResult = applyScheme({
+  productCode: row.SAPCODE,
+  orderQty: qty,
+  itemDesc: row.ITEMDESC,
+  division: row.DVN,
+  schemes
+});
+
+      if (schemeResult.schemeApplied) {
+  console.log("✅ SCHEME APPLIED", {
+    product: row.SAPCODE,
+    qty,
+    freeQty: schemeResult.freeQty,
+    division: row.DVN
+  });
+}
+
+      console.log(`📦 Row ${idx + 1}: QTY=${qty}, BoxPack=${boxPack}, Pack=${pack}`);
+      
+      if (schemeResult.schemeApplied) {
+  schemeRows.push({
+    productCode: row.SAPCODE,
+    productName: row.ITEMDESC,
+    orderQty: qty,
+    freeQty: schemeResult.freeQty || 0,
+    schemePercent: schemeResult.schemePercent || 0,
+    division: row.DVN || ""
+  });
+
+  totalFreeQty += schemeResult.freeQty || 0;
+}
+
+output.push({
+  CODE: customer.customerCode,
+  "CUSTOMER NAME": customer.customerName,
+  SAPCODE: row.SAPCODE || "",
+  ITEMDESC: row.ITEMDESC,
+  ORDERQTY: qty,
+  "BOX PACK": boxPack,
+  PACK: pack,
+  DVN: row.DVN || "",
+  _hasScheme: schemeResult.schemeApplied || false
+});
+
     });
     
     if (!output.length) {
@@ -323,34 +376,119 @@ export const convertOrders = async (req, res, next) => {
       });
     }
     
-    // Generate Excel
+    // ✅ GENERATE EXCEL
     fs.mkdirSync("uploads", { recursive: true });
     const fileName = `order-training-${upload._id}.xlsx`;
     const filePath = path.join("uploads", fileName);
     
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(output, { header: TEMPLATE_COLUMNS });
+    
+    const wsData = output.map(row => {
+      const { _hasScheme, ...cleanRow } = row;
+      return cleanRow;
+    });
+    
+    const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+    TEMPLATE_COLUMNS.forEach((_, colIdx) => {
+  const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+  if (ws[cellRef]) {
+    ws[cellRef].s = headerStyle;
+  }
+});
+
+    // ✅ YELLOW HIGHLIGHTING FOR SCHEMES
+    if (!ws['!rows']) ws['!rows'] = [];
+    
+output.forEach((row, idx) => {
+  const excelRow = idx + 1;
+
+  TEMPLATE_COLUMNS.forEach((col, colIdx) => {
+    const cellRef = XLSX.utils.encode_cell({
+      r: excelRow,
+      c: colIdx
+    });
+
+    if (!ws[cellRef]) ws[cellRef] = { v: "" };
+
+    // BASE STYLE
+    let style = normalCellStyle;
+
+    // ORDERQTY column always yellow
+    if (col === "ORDERQTY") {
+      style = qtyCellStyle;
+    }
+
+    // SCHEME ROW overrides background but keeps borders
+    if (row._hasScheme) {
+      style = {
+        ...style,
+        fill: schemeRowStyle.fill
+      };
+    }
+
+    ws[cellRef].s = style;
+  });
+});
+
+
+    ws["!cols"] = [
+  { wch: 14 }, // CODE
+  { wch: 28 }, // CUSTOMER NAME
+  { wch: 14 }, // SAPCODE
+  { wch: 40 }, // ITEMDESC
+  { wch: 10 }, // ORDERQTY
+  { wch: 10 }, // BOX PACK
+  { wch: 10 }, // PACK
+  { wch: 10 }  // DVN
+];
+
     XLSX.utils.book_append_sheet(wb, ws, "Order Training");
     XLSX.writeFile(wb, filePath);
     
-    // Update upload
+    // ✅ UPDATE RECORD
     upload.status = "CONVERTED";
     upload.outputFile = fileName;
     upload.recordsProcessed = output.length;
     upload.recordsFailed = errors.length;
-    upload.convertedData = { rows: output };
+   upload.convertedData = {
+  rows: output.map(row => ({
+    ...row,
+    hasScheme: row._hasScheme === true
+  }))
+};
+
+    upload.customerCode = customer.customerCode;
+    upload.customerName = customer.customerName;
+
+    upload.schemeSummary = {
+  count: schemeRows.length,
+  totalFreeQty
+};
+console.log("🟡 TOTAL SCHEME ROWS:", schemeRows.length);
+console.log("🟡 SCHEME ROWS:", schemeRows);
+
+upload.schemeDetails = schemeRows;
+
     await upload.save();
     
-    console.log(`✅ Converted: ${output.length} rows`);
+    console.log(`✅ Converted: ${output.length} rows for ${customer.customerName}`);
     
-    res.json({
-      success: true,
-      status: "CONVERTED",
-      uploadId: upload._id,
-      recordsProcessed: output.length,
-      errors: errors.length,
-      convertedData: output
-    });
+   res.json({
+  success: true,
+  status: "CONVERTED",
+  uploadId: upload._id,
+  recordsProcessed: output.length,
+  errors: errors.length,
+
+  schemeSummary: {
+    count: schemeRows.length,
+    totalFreeQty
+  },
+
+  convertedData: output.map(({ _hasScheme, ...row }) => row)
+});
+
+
     
   } catch (err) {
     console.error('❌ Conversion Error:', err);
@@ -359,38 +497,60 @@ export const convertOrders = async (req, res, next) => {
 };
 
 /* =====================================================
-   GET ORDER BY ID
+   OTHER ENDPOINTS
 ===================================================== */
-
 export const getOrderById = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    
     const upload = await OrderUpload.findOne({
-      _id: id,
+      _id: req.params.id,
       userId: req.user.id
     }).lean();
-    
+
     if (!upload) {
       return res.status(404).json({
         success: false,
         message: "Order not found"
       });
     }
-    
+
+    const schemeDetails = upload.schemeDetails || [];
+
+    const schemeSummary = {
+      count: schemeDetails.length,
+      totalFreeQty: schemeDetails.reduce(
+        (sum, s) => sum + (s.freeQty || 0),
+        0
+      )
+    };
+
     res.json({
       success: true,
-      ...upload
+      status: upload.status,
+      recordsProcessed: upload.recordsProcessed || 0,
+      recordsFailed: upload.recordsFailed || 0,
+
+      errors: upload.rowErrors || [],
+      warnings: upload.rowWarnings || [],
+
+      convertedData: upload.convertedData || null,
+
+      // ✅ ALWAYS RETURN
+      schemeSummary,
+      schemeDetails,
+
+      fileName: upload.fileName,
+      outputFile: upload.outputFile,
+      createdAt: upload.createdAt,
+      updatedAt: upload.updatedAt,
+      _id: upload._id
     });
-    
+
   } catch (err) {
     next(err);
   }
 };
 
-/* =====================================================
-   HISTORY
-===================================================== */
+
 
 export const getOrderHistory = async (req, res) => {
   const history = await OrderUpload.find({ userId: req.user.id })
@@ -408,40 +568,4 @@ export const getOrderHistory = async (req, res) => {
       createdAt: h.createdAt
     }))
   });
-};
-
-// Add to orderController.js
-export const processBatchOrders = async (req, res, next) => {
-  try {
-    const BATCH_SIZE = 100;
-    const { uploadId } = req.body;
-    
-    const upload = await OrderUpload.findById(uploadId);
-    const rows = upload.extractedData.dataRows;
-    
-    const results = [];
-    
-    // Process in batches
-    for (let i = 0; i < rows.length; i += BATCH_SIZE) {
-      const batch = rows.slice(i, i + BATCH_SIZE);
-      const batchResults = await processOrderBatch(batch);
-      results.push(...batchResults);
-      
-      // Update progress
-      upload.progress = Math.round((i / rows.length) * 100);
-      await upload.save();
-    }
-    
-    // Generate final output
-    const output = generateOrderOutput(results);
-    
-    res.json({
-      success: true,
-      processed: results.length,
-      output
-    });
-    
-  } catch (err) {
-    next(err);
-  }
 };

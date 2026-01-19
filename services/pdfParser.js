@@ -13,7 +13,7 @@ import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
 
 // Y-tolerance for grouping text items into rows
 // Tighter tolerance prevents headers merging with data
-const ROW_Y_TOLERANCE = 1.5;
+const ROW_Y_TOLERANCE = 2.2;
 
 // Font size difference threshold (indicates header vs data)
 const FONT_SIZE_THRESHOLD = 1.5;

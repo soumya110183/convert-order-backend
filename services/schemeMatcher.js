@@ -1,30 +1,28 @@
-// schemeMatcher.js - FIXED VERSION
 export function applyScheme({ productCode, orderQty, schemes }) {
-  if (!schemes?.length) return { freeQty: 0 };
-  
-  // Find scheme for this product
-  const scheme = schemes.find(s => 
-    s.productCode === productCode && 
-    orderQty >= (s.minQty || 0)
+  const scheme = schemes.find(
+    s => s.productCode === productCode && s.isActive
   );
-  
-  if (!scheme) return { freeQty: 0 };
-  
-  // Calculate free quantity
-  let freeQty = 0;
-  
-  if (scheme.schemePercent > 0) {
-    // Percentage-based scheme
-    freeQty = Math.floor(orderQty * scheme.schemePercent);
-  } else if (scheme.freeQty > 0 && scheme.minQty > 0) {
-    // Buy X get Y free
-    const batches = Math.floor(orderQty / scheme.minQty);
-    freeQty = batches * scheme.freeQty;
+
+  if (!scheme || !scheme.slabs?.length) {
+    return { schemeApplied: false };
   }
-  
+
+  const eligibleSlab = scheme.slabs
+    .filter(s => orderQty >= s.minQty)
+    .sort((a, b) => b.minQty - a.minQty)[0];
+
+  if (!eligibleSlab) {
+    return {
+      schemeApplied: false,
+      availableSlabs: scheme.slabs
+    };
+  }
+
   return {
-    freeQty,
-    schemePercent: scheme.schemePercent || 0,
-    schemeApplied: !!scheme
+    schemeApplied: true,
+    freeQty: eligibleSlab.freeQty,
+    schemePercent: eligibleSlab.schemePercent,
+    appliedSlab: eligibleSlab,
+    availableSlabs: scheme.slabs
   };
 }

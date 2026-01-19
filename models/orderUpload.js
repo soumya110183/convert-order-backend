@@ -45,6 +45,29 @@ convertedData: {
       index: true,
     },
 
+    schemeSummary: {
+  count: {
+    type: Number,
+    default: 0
+  },
+  totalFreeQty: {
+    type: Number,
+    default: 0
+  }
+},
+
+schemeDetails: [
+  {
+    productCode: String,
+    productName: String,
+    orderQty: Number,
+    freeQty: Number,
+    schemePercent: Number,
+    division: String
+  }
+],
+
+
     recordsProcessed: { type: Number, default: 0 },
     recordsFailed: { type: Number, default: 0 },
 
@@ -75,6 +98,7 @@ convertedData: {
     errorCode: String,
     errorMessage: String,
   },
+  
   { timestamps: true }
 );
 

@@ -1,4 +1,5 @@
-import XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
+
 import crypto from "crypto";
 import MasterOrder from "../models/masterOrder.js";
 import CustomerMaster from "../models/customerMaster.js";

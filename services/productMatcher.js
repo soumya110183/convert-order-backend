@@ -1,252 +1,140 @@
 /**
- * PRODUCT MATCHER – PRODUCTION GRADE
- * Pharma-safe, noise-tolerant, audit-friendly
+ * PRODUCT MATCHER - ENHANCED VERSION
+ * ✅ Returns boxPack from master DB for pack calculation
  */
 
 import { splitProduct } from "../utils/splitProducts.js";
-
-/* =====================================================
-   NORMALIZATION HELPERS
-===================================================== */
+import { cleanInvoiceDesc } from "../utils/invoiceUtils.js";
+import { similarity } from "../utils/invoiceUtils.js";
 
 function normalize(text = "") {
   return text
     .toUpperCase()
-    .replace(/[^A-Z0-9+/.\s]/g, " ")
+    .replace(/\+FREE/g, "")
+    .replace(/['"*]/g, "")
+    .replace(/[^A-Z0-9 ]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function normalizeBase(text = "") {
-  return normalize(text)
-    .replace(
-      /\b(TABLETS?|TABS?|CAPS?|CAPSULES?|SYRUP|SUSPENSION|INJ|INJECTION|SPRAY|DROPS?|CREAM|GEL)\b/g,
-      ""
-    )
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function normalizeVariant(v = "") {
-  return normalize(v)
-    .replace(/\b30SR\b/g, "SR")
-    .replace(/\bSUSTAINED\s*RELEASE\b/g, "SR")
-    .replace(/\bCONTROLLED\s*RELEASE\b/g, "CR")
-    .replace(/\bEXTENDED\s*RELEASE\b/g, "XR")
-    .replace(/\bPLUS\b/g, "+")
-    .trim();
-}
-
-/* =====================================================
-   JUNK LINE FILTER
-===================================================== */
-
-function isHardJunkLine(text = "") {
-  const t = text.toUpperCase();
-  return (
-    t.length < 6 ||
-    /^APPROX\s*VALUE/i.test(t) ||
-    /^MICRO\s*\(/i.test(t) ||
-    /^PRINTED\s+BY/i.test(t) ||
-    /^SUPPLIER\s*:/i.test(t) ||
-    /^GSTIN/i.test(t) ||
-    /^DL\s*NO/i.test(t) ||
-    /^PAGE\s+\d+/i.test(t)
-  );
-}
-
-/* =====================================================
-   PACK REMOVAL
-===================================================== */
-
-function removePackSize(desc = "") {
-  return normalize(desc)
-    .replace(/\(\s*\d+\s*['`"]?\s*S\s*\)/gi, "")
-    .replace(/\b\d+\s*['`"]?\s*S\b(?!\s*MG|\s*GM|\s*ML)/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/* =====================================================
-   DOSAGE NORMALIZATION
-===================================================== */
-
-function normalizeDosageToMg(value = "") {
-  if (!value) return null;
-
-  const text = normalize(value).replace(/\s+/g, "");
-
-  // Combo dose → return normalized string
-  if (text.includes("/")) {
-    return text
-      .split("/")
-      .map(v => normalizeDosageToMg(v))
-      .filter(Boolean)
-      .join("/");
-  }
-
-  const m = text.match(/([\d.]+)(MG|GM|G|MCG|IU)?/);
-  if (!m) return null;
-
-  const num = parseFloat(m[1]);
-  if (isNaN(num)) return null;
-
-  const unit = m[2] || "MG";
-
-  switch (unit) {
-    case "MCG": return num / 1000;
-    case "MG": return num;
-    case "G":
-    case "GM": return num * 1000;
-    case "IU": return num;
-    default: return num;
-  }
-}
-
-/* =====================================================
-   MATCHING CONFIG
-===================================================== */
-
-const MATCH_THRESHOLD = 0.55;
-const KNOWN_PRODUCTS = ["DOLO", "SILYBON", "EBAST", "MICRODOX", "AMLONG"];
-
-/* =====================================================
-   CORE MATCHER
-===================================================== */
-
+/**
+ * Smart product matching with confidence scoring
+ * Returns matched product with boxPack from master DB
+ */
 export function matchProductSmart(invoiceDesc, products) {
   if (!invoiceDesc || !products?.length) return null;
-  if (isHardJunkLine(invoiceDesc)) return null;
 
-  const cleaned = removePackSize(invoiceDesc);
-  const invoiceParts = splitProduct(cleaned);
+  const cleanedInvoice = cleanInvoiceDesc(invoiceDesc);
+  const inv = normalize(cleanedInvoice);
+  const invParts = splitProduct(cleanedInvoice);
 
-  let bestMatch = null;
+
+
+  let best = null;
   let bestScore = 0;
 
-  for (const product of products) {
-    let score = 0;
+  for (const p of products) {
+    const master = normalize(p.productName);
+    if (!master) continue;
 
-    const productName = removePackSize(product.productName || "");
-    const productParts = splitProduct(productName);
+    // ✅ STRATEGY 1: Exact match
+    if (inv === master) {
+      return {
+        ...p,
+        confidence: 1.0,
+        matchType: 'EXACT'
+      };
+    }
 
-    const baseInv = normalizeBase(invoiceParts.name || "");
-    const baseProd = normalizeBase(product.baseName || productParts.name || "");
-
-    const invDose = normalizeDosageToMg(invoiceParts.strength);
-    const prodDose = normalizeDosageToMg(product.dosage || productParts.strength);
-
-    const invVar = normalizeVariant(invoiceParts.variant || "");
-    const prodVar = normalizeVariant(product.variant || productParts.variant || "");
-
-    /* ---------- BASE NAME ---------- */
-    if (baseInv && baseProd) {
-      if (baseInv === baseProd) score += 0.45;
-      else if (baseInv.includes(baseProd) || baseProd.includes(baseInv)) score += 0.35;
-      else {
-        const iw = baseInv.split(" ");
-        const pw = baseProd.split(" ");
-        const common = iw.filter(w => pw.includes(w));
-        if (!common.length) continue;
-        score += (common.length / Math.max(iw.length, pw.length)) * 0.3;
+    // ✅ STRATEGY 2: Cleaned name match
+    if (p.cleanedProductName) {
+      const cleanMaster = normalize(p.cleanedProductName);
+      if (inv === cleanMaster) {
+        return {
+          ...p,
+          confidence: 0.95,
+          matchType: 'CLEANED_EXACT'
+        };
       }
     }
 
-    /* ---------- DOSAGE ---------- */
-   /* ---------- DOSAGE (STRICT) ---------- */
-if (invDose && prodDose) {
-  // combo doses must match exactly (e.g. 50/500)
-  if (typeof invDose === "string" || typeof prodDose === "string") {
-    if (invDose !== prodDose) continue; // 🚫 HARD REJECT
-  } else {
-    if (invDose !== prodDose) continue; // 🚫 HARD REJECT
-  }
-
-  // exact match only
-  score += 0.35;
-}
-
-// invoice has dose but product doesn't → reject
-if (invDose && !prodDose) {
-  continue;
-}
-
-/* ---------- FORM / VARIANT SAFETY ---------- */
-const LIQUID_FORMS = ["SYP", "SYRUP", "DROPS"];
-
-if (invVar && prodVar) {
-  const invIsLiquid = LIQUID_FORMS.includes(invVar);
-  const prodIsLiquid = LIQUID_FORMS.includes(prodVar);
-
-  if (invIsLiquid !== prodIsLiquid) {
-    continue; // 🚫 tablet must NOT match syrup
-  }
-}
-
-
-    /* ---------- VARIANT ---------- */
-    if (invVar && prodVar) {
-      if (invVar === prodVar) score += 0.2;
-      else if (invVar.includes(prodVar) || prodVar.includes(invVar)) score += 0.15;
+    // ✅ STRATEGY 3: Base name + dosage match
+    if (invParts.name && p.baseName) {
+      const invBase = normalize(invParts.name);
+      const masterBase = normalize(p.baseName);
+      
+      if (invBase === masterBase) {
+        // Check dosage match
+        const dosageMatch = invParts.strength === p.dosage;
+        
+        if (dosageMatch) {
+          const score = 0.90;
+          if (score > bestScore) {
+            bestScore = score;
+            best = {
+              ...p,
+              confidence: score,
+              matchType: 'BASE_DOSAGE'
+            };
+          }
+        }
+      }
     }
 
-    /* ---------- BRAND BOOST ---------- */
-    if (KNOWN_PRODUCTS.some(k => baseProd.includes(k))) {
-      score += 0.1;
+    // ✅ STRATEGY 4: Contains match
+    if (inv.includes(master) || master.includes(inv)) {
+      const score = 0.80;
+      if (score > bestScore) {
+        bestScore = score;
+        best = {
+          ...p,
+          confidence: score,
+          matchType: 'CONTAINS'
+        };
+      }
+      continue;
     }
 
-    /* ---------- FINAL ---------- */
-    if (score >= MATCH_THRESHOLD && score > bestScore) {
+    // ✅ STRATEGY 5: Word overlap scoring
+    const invWords = inv.split(" ").filter(w => w.length > 2);
+    const masterWords = master.split(" ").filter(w => w.length > 2);
+
+    const common = invWords.filter(w => masterWords.includes(w));
+    const score = common.length > 0 
+      ? (common.length * 2) / (invWords.length + masterWords.length)
+      : 0;
+
+    if (score > bestScore && score >= 0.6) {
       bestScore = score;
-      bestMatch = {
-        ...product,
-        confidence: Number(score.toFixed(2)),
-        matchedParts: invoiceParts
+      best = {
+        ...p,
+        confidence: score,
+        matchType: 'FUZZY'
       };
     }
   }
 
-  /* ---------- BASE-NAME FALLBACK ---------- */
-  if (!bestMatch && invoiceParts.name) {
-    const fallback = products.find(p =>
-      normalizeBase(p.baseName || "").includes(normalizeBase(invoiceParts.name))
-    );
-
-    if (fallback) {
-      return {
-        ...fallback,
-        confidence: 0.51,
-        forced: true,
-        matchedParts: invoiceParts
-      };
-    }
-  }
-
-  return bestMatch;
+  return best;
 }
 
-/* =====================================================
-   OPTIONAL INDEXER (FUTURE USE)
-===================================================== */
-
-export function enhanceProductMatching(products = []) {
-  const map = { byBase: {}, byWord: {} };
-
-  for (const p of products) {
-    const base = normalizeBase(p.baseName || "");
-    if (base) {
-      if (!map.byBase[base]) map.byBase[base] = [];
-      map.byBase[base].push(p);
-    }
-
-    normalize(p.productName || "")
-      .split(" ")
-      .filter(w => w.length > 3)
-      .forEach(w => {
-        if (!map.byWord[w]) map.byWord[w] = [];
-        map.byWord[w].push(p);
-      });
-  }
-
-  return map;
+/**
+ * Legacy loose matcher (for backward compatibility)
+ */
+export function matchProductLoose(invoiceDesc, products) {
+  const result = matchProductSmart(invoiceDesc, products);
+  
+  if (!result) return null;
+  
+  return {
+    product: {
+      ITEMDESC: result.productName,
+      SAPCODE: result.productCode,
+      PACK: result.pack || 0,
+      "BOX PACK": result.boxPack || 0,
+      DVN: result.division || ""
+    },
+    score: result.confidence
+  };
 }
+
+export default { matchProductSmart, matchProductLoose };

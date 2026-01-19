@@ -8,7 +8,8 @@
  */
 
 import OrderUpload from "../models/orderUpload.js";
-import XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
+
 import path from "path";
 import fs from "fs";
 
@@ -121,4 +122,4 @@ export async function previewConvertedOrders(req, res, next) {
 export default {
   downloadConvertedFile,
   previewConvertedOrders
-};
+}

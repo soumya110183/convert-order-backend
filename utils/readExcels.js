@@ -1,4 +1,5 @@
-import XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
+
 
 function normalizeKey(key = "") {
   return key

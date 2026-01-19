@@ -1,5 +1,6 @@
 import crypto from "crypto";
-import XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
+
 
 import { parseInvoice } from "../../services/invoiceParserService.js";
 import { buildOrderTrainingRows } from "../../services/orderTrainingService.js";

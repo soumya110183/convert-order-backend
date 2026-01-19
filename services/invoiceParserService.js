@@ -1,4 +1,5 @@
-import XLSX from "xlsx";
+import XLSX from "xlsx-js-style";
+
 import { extractTextFromPDFAdvanced } from "./pdfParser.js";
 
 /* =====================================================
