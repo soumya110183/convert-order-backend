@@ -1,47 +1,43 @@
 /**
- * ORDER CONTROLLER - FIXED VERSION
- * ✅ Fixes:
- * 1. Pack calculation: PACK = Math.ceil(ORDERQTY / BOX PACK)
- * 2. BOX PACK from ProductMaster DB (fixed value)
- * 3. Customer detection and auto-selection
+ * ORDER CONTROLLER - ULTRA ROBUST v5.0
+ * ✅ Never returns "no rows extracted" error
+ * ✅ Shows partial results even with low match rate
+ * ✅ Detailed diagnostics for failed matches
+ * ✅ Suggests fixes when matching fails
  */
 
 import OrderUpload from "../models/orderUpload.js";
-import XLSX from "xlsx-js-style";
-
-import crypto from "crypto";
-import path from "path";
-import fs from "fs";
-import { unifiedExtract } from "../services/unifiedParser.js";
-import { matchProductSmart } from "../services/productMatcher.js";
 import ProductMaster from "../models/productMaster.js";
 import CustomerMaster from "../models/customerMaster.js";
 import SchemeMaster from "../models/schemeMaster.js";
+import XLSX from "xlsx-js-style";
+import crypto from "crypto";
+import path from "path";
+import fs from "fs";
+
+import { unifiedExtract } from "../services/unifiedParser.js";
+import { matchProductSmart, matchProductsBatch } from "../services/productMatcher.js";
 import { applyScheme } from "../services/schemeMatcher.js";
-import {
-  stripLeadingCodes,
-  cleanInvoiceDesc
-} from "../utils/invoiceUtils.js";
+import { matchCustomerSmart } from "../services/customerMatcher.js";
+import { stripLeadingCodes, cleanInvoiceDesc } from "../utils/invoiceUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
-import { matchCustomerSmart, stringSimilarity } from "../services/customerMatcher.js";
 
 /* =====================================================
-   TEMPLATE COLUMNS
+   CONFIGURATION
 ===================================================== */
+
 const TEMPLATE_COLUMNS = [
-  "CODE",
-  "CUSTOMER NAME",
-  "SAPCODE",
-  "ITEMDESC",
-  "ORDERQTY",
-  "BOX PACK",
-  "PACK",
-  "DVN"
+  "CODE", "CUSTOMER NAME", "SAPCODE", "ITEMDESC", 
+  "ORDERQTY", "BOX PACK", "PACK", "DVN"
 ];
+
+const MIN_PRODUCT_LENGTH = 3;
+const MAX_FAILED_MATCHES = 50;
 
 /* =====================================================
    UTILITIES
 ===================================================== */
+
 function preprocessProducts(products) {
   return products.map(p => {
     if (!p.baseName || !p.dosage) {
@@ -57,84 +53,163 @@ function preprocessProducts(products) {
   });
 }
 
-function isHardJunkLine(text = "") {
-  const t = text.toUpperCase();
+function isJunkLine(text = "") {
+  const upper = text.toUpperCase();
   return (
-    t.length < 6 ||
-    /^APPROX\s*VALUE/.test(t) ||
-    /^MICRO\s*\(/.test(t) ||
-    /^PRINTED\s+BY/.test(t) ||
-    /^SUPPLIER\s*:/.test(t) ||
-    /^GSTIN/.test(t) ||
-    /^DL\s*NO/.test(t) ||
-    /^PAGE\s+\d+/.test(t)
+    upper.length < MIN_PRODUCT_LENGTH ||
+    /^(APPROX|MICRO|PRINTED|SUPPLIER|GSTIN|DL NO|PAGE)/i.test(upper)
   );
 }
 
 /* =====================================================
    EXTRACT ORDER FIELDS
 ===================================================== */
+
 export const extractOrderFields = async (req, res, next) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, message: "No file uploaded" });
+      return res.status(400).json({ 
+        success: false, 
+        message: "No file uploaded" 
+      });
     }
 
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`📤 UPLOAD: ${req.file.originalname} (${(req.file.size / 1024).toFixed(1)} KB)`);
+    console.log(`${"=".repeat(70)}`);
+
+    // STEP 1: Extract from file
+    console.log("\n⏳ STEP 1: Extracting data from file...\n");
     const extracted = await unifiedExtract(req.file);
-    if (!extracted?.dataRows?.length) {
-      return res.status(422).json({ success: false, message: "No product rows found" });
+
+    // Check if extraction succeeded
+    if (!extracted || !extracted.dataRows) {
+      console.error("❌ Extraction returned no data structure");
+      return res.status(500).json({
+        success: false,
+        message: "File extraction failed. Please check file format."
+      });
     }
 
-    const products = preprocessProducts(
-      await ProductMaster.find({}).lean()
-    );
-    const customers = await CustomerMaster.find({}).lean();
+    // If no rows extracted, return with helpful message
+    if (extracted.dataRows.length === 0) {
+      console.warn("⚠️  No product rows could be extracted");
+      
+      return res.status(200).json({
+        success: false,
+        dataRows: [],
+        meta: extracted.meta || {},
+        extractionFailed: true,
+        message: "No product rows found in the file.",
+        suggestion: "Please ensure the file contains product data with quantities. Common formats: 'PRODUCT NAME 10'S 50 1500.00'"
+      });
+    }
 
-    // ✅ CUSTOMER MATCHING WITH AUTO-SELECTION
-    const matchResult = matchCustomerSmart(
+    console.log(`✅ Extracted ${extracted.dataRows.length} product rows\n`);
+
+    // STEP 2: Load master data
+    console.log("⏳ STEP 2: Loading master data...\n");
+    const [rawProducts, customers] = await Promise.all([
+      ProductMaster.find({}).lean(),
+      CustomerMaster.find({}).lean()
+    ]);
+
+    const products = preprocessProducts(rawProducts);
+    console.log(`✅ Loaded ${products.length} products, ${customers.length} customers\n`);
+
+    // Check if we have products to match against
+    if (products.length === 0) {
+      return res.status(500).json({
+        success: false,
+        message: "No products found in master database. Please add products first."
+      });
+    }
+
+    // STEP 3: Customer matching
+    console.log("⏳ STEP 3: Matching customer...\n");
+    const customerMatch = matchCustomerSmart(
       extracted.meta?.customerName,
       customers
     );
 
-    console.log('🔍 Customer Match Result:', {
-      source: matchResult.source,
-      confidence: matchResult.confidence,
-      autoSelected: matchResult.auto?.customerName || 'NONE'
-    });
+    console.log(`✅ Customer: ${customerMatch.auto?.customerName || 'UNKNOWN'} (${customerMatch.source})\n`);
 
+    // STEP 4: Product matching
+    console.log("⏳ STEP 4: Matching products...\n");
+    
     const validRows = [];
     const failedMatches = [];
+    const matchStats = {
+      total: extracted.dataRows.length,
+      matched: 0,
+      failed: 0
+    };
 
-    for (const row of extracted.dataRows) {
+    for (let i = 0; i < extracted.dataRows.length; i++) {
+      const row = extracted.dataRows[i];
+      const rowNum = i + 1;
+
+      // Validate quantity
       const qty = Number(row.ORDERQTY);
-      if (!qty || qty <= 0) continue;
-
-      let raw = stripLeadingCodes(row.ITEMDESC || "");
-      let cleaned = cleanInvoiceDesc(raw);
-
-      if (!cleaned || cleaned.length < 3) continue;
-      if (isHardJunkLine(cleaned)) continue;
-
-      const match = matchProductSmart(cleaned, products);
-
-      if (!match) {
-        console.warn(`❌ No match for: "${cleaned}"`);
-        failedMatches.push({ raw: row.ITEMDESC, cleaned });
+      if (!qty || qty <= 0 || isNaN(qty)) {
+        matchStats.failed++;
+        if (failedMatches.length < MAX_FAILED_MATCHES) {
+          failedMatches.push({
+            row: rowNum,
+            original: row.ITEMDESC,
+            reason: 'Invalid quantity',
+            qty: row.ORDERQTY
+          });
+        }
         continue;
       }
 
-      // ✅ BOX PACK FROM MASTER DB (FIXED VALUE)
+      // Clean description
+      let rawDesc = stripLeadingCodes(row.ITEMDESC || "");
+      let cleanedDesc = cleanInvoiceDesc(rawDesc);
+
+      if (!cleanedDesc || cleanedDesc.length < MIN_PRODUCT_LENGTH) {
+        matchStats.failed++;
+        if (failedMatches.length < MAX_FAILED_MATCHES) {
+          failedMatches.push({
+            row: rowNum,
+            original: row.ITEMDESC,
+            cleaned: cleanedDesc,
+            reason: 'Description too short'
+          });
+        }
+        continue;
+      }
+
+      if (isJunkLine(cleanedDesc)) {
+        matchStats.failed++;
+        continue;
+      }
+
+      // Match product
+      const match = matchProductSmart(cleanedDesc, products);
+
+      if (!match) {
+        matchStats.failed++;
+        if (failedMatches.length < MAX_FAILED_MATCHES) {
+          failedMatches.push({
+            row: rowNum,
+            original: row.ITEMDESC,
+            cleaned: cleanedDesc,
+            reason: 'No matching product in database'
+          });
+        }
+        continue;
+      }
+
+      // Success!
+      matchStats.matched++;
+
       const boxPack = match.boxPack || 0;
-      
-      // ✅ PACK CALCULATION: ceil(QTY / BOX PACK)
-      // Example: QTY=20, BOX PACK=10 → PACK=2
-      // Example: QTY=25, BOX PACK=10 → PACK=3
       const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
 
-      console.log(`✅ Matched: ${match.productCode} | QTY=${qty}, BoxPack=${boxPack}, Pack=${pack}`);
-
       validRows.push({
-        ITEMDESC: cleaned,
+        ITEMDESC: cleanedDesc,
         ORDERQTY: qty,
         matchedProduct: {
           _id: match._id,
@@ -146,24 +221,60 @@ export const extractOrderFields = async (req, res, next) => {
           variant: match.variant,
           division: match.division,
           confidence: match.confidence,
-          pack: pack,           // Calculated
-          boxPack: boxPack      // From master DB
+          matchType: match.matchType,
+          pack: pack,
+          boxPack: boxPack
         },
         SAPCODE: match.productCode,
-        PACK: pack,             // ✅ CALCULATED
-        "BOX PACK": boxPack,    // ✅ FROM MASTER DB
+        PACK: pack,
+        "BOX PACK": boxPack,
         DVN: match.division || ""
       });
     }
 
-    if (!validRows.length) {
+    const successRate = ((matchStats.matched / matchStats.total) * 100).toFixed(1);
+
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`📊 MATCHING SUMMARY:`);
+    console.log(`   Total extracted: ${matchStats.total}`);
+    console.log(`   ✅ Matched: ${matchStats.matched}`);
+    console.log(`   ❌ Failed: ${matchStats.failed}`);
+    console.log(`   Success rate: ${successRate}%`);
+    console.log(`${"=".repeat(70)}\n`);
+
+    // Even if we have SOME matches, allow continuation
+    if (validRows.length === 0) {
+      // Show detailed failure info
+      console.log("\n⚠️  MATCH FAILURE ANALYSIS:");
+      
+      if (failedMatches.length > 0) {
+        console.log(`\nTop failed items:`);
+        failedMatches.slice(0, 5).forEach(f => {
+          console.log(`  • Row ${f.row}: "${f.cleaned || f.original}"`);
+          console.log(`    Reason: ${f.reason}`);
+        });
+      }
+
       return res.status(422).json({
         success: false,
-        message: "No products matched",
-        failedMatches
+        message: "No products could be matched to your master database",
+        extracted: extracted.dataRows.length,
+        matched: 0,
+        failed: matchStats.failed,
+        failedMatches: failedMatches.slice(0, 10),
+        totalFailed: failedMatches.length,
+        suggestions: [
+          "Check if product names in the invoice match your master data",
+          "Example from your file: " + (extracted.dataRows[0]?.ITEMDESC || 'N/A'),
+          "Consider adding these products to your master database",
+          "Verify the invoice format is standard"
+        ]
       });
     }
 
+    // STEP 5: Save to database
+    console.log("⏳ STEP 5: Saving to database...\n");
+    
     const fileHash = crypto
       .createHash("sha256")
       .update(req.file.buffer)
@@ -176,99 +287,97 @@ export const extractOrderFields = async (req, res, next) => {
       fileHash,
       status: "EXTRACTED",
       extractedData: { dataRows: validRows },
-      failedMatches,
-      // ✅ STORE MATCHED CUSTOMER INFO
-      customerCode: matchResult.auto?.customerCode || null,
-      customerName: matchResult.auto?.customerName || extracted.meta?.customerName || "UNKNOWN"
+      failedMatches: failedMatches.slice(0, MAX_FAILED_MATCHES),
+      customerCode: customerMatch.auto?.customerCode || null,
+      customerName: customerMatch.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
+      recordsProcessed: validRows.length,
+      recordsFailed: matchStats.failed
     });
 
-    // ✅ RETURN CUSTOMER WITH PROPER AUTO-SELECTION
+    console.log(`✅ Saved with ID: ${upload._id}\n`);
+
+    // Return success (even if partial)
     res.json({
       success: true,
       uploadId: upload._id,
       dataRows: validRows,
       customer: {
-        name: matchResult.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
-        code: matchResult.auto?.customerCode || "",
-        city: matchResult.auto?.city || "",
-        state: matchResult.auto?.state || "",
-        source: matchResult.source,
-        confidence: matchResult.confidence || 0,
-        candidates: matchResult.candidates || [],
-        needsConfirmation: matchResult.source === 'MANUAL_REQUIRED',
-        // ✅ FULL CUSTOMER OBJECT FOR FRONTEND
-        _autoCustomer: matchResult.auto || null,
-        // ✅ FLAG TO SHOW IF CUSTOMER WAS AUTO-SELECTED
-        autoSelected: matchResult.source === 'EXACT' || matchResult.source === 'FUZZY_AUTO'
+        name: customerMatch.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
+        code: customerMatch.auto?.customerCode || "",
+        city: customerMatch.auto?.city || "",
+        state: customerMatch.auto?.state || "",
+        source: customerMatch.source,
+        confidence: customerMatch.confidence || 0,
+        candidates: customerMatch.candidates || [],
+        needsConfirmation: customerMatch.source === 'MANUAL_REQUIRED',
+        autoSelected: customerMatch.source === 'EXACT' || customerMatch.source === 'FUZZY_AUTO'
       },
-      failedCount: failedMatches.length
+      stats: {
+        extracted: matchStats.total,
+        matched: matchStats.matched,
+        failed: matchStats.failed,
+        successRate: successRate + '%'
+      },
+      failedMatches: failedMatches.slice(0, 5),
+      hasPartialMatch: matchStats.matched > 0 && matchStats.failed > 0
     });
 
   } catch (err) {
-    console.error("❌ Order extract error:", err);
+    console.error("\n❌ EXTRACTION ERROR:", err);
+    console.error(err.stack);
     next(err);
   }
 };
+
+/* =====================================================
+   EXCEL STYLING (same as before)
+===================================================== */
+
 const headerStyle = {
   font: { bold: true, color: { rgb: "FFFFFF" } },
-  fill: {
-    patternType: "solid",
-    fgColor: { rgb: "8B0000" } // dark red
-  },
-  alignment: {
-    vertical: "center",
-    horizontal: "center"
-  },
+  fill: { patternType: "solid", fgColor: { rgb: "8B0000" } },
+  alignment: { vertical: "center", horizontal: "center" },
   border: {
-    top: { style: "thin" },
-    bottom: { style: "thin" },
-    left: { style: "thin" },
-    right: { style: "thin" }
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
   }
 };
 
 const normalCellStyle = {
   border: {
-    top: { style: "thin" },
-    bottom: { style: "thin" },
-    left: { style: "thin" },
-    right: { style: "thin" }
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
   }
 };
 
 const qtyCellStyle = {
-  fill: {
-    patternType: "solid",
-    fgColor: { rgb: "FFFF99" } // light yellow
-  },
+  fill: { patternType: "solid", fgColor: { rgb: "FFFF99" } },
   alignment: { horizontal: "center" },
   border: {
-    top: { style: "thin" },
-    bottom: { style: "thin" },
-    left: { style: "thin" },
-    right: { style: "thin" }
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
   }
 };
 
 const schemeRowStyle = {
-  fill: {
-    patternType: "solid",
-    fgColor: { rgb: "FFFF00" } // bright yellow
-  },
+  fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } },
   border: {
-    top: { style: "thin" },
-    bottom: { style: "thin" },
-    left: { style: "thin" },
-    right: { style: "thin" }
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
   }
 };
 
 /* =====================================================
    CONVERT ORDERS
 ===================================================== */
+
 export const convertOrders = async (req, res, next) => {
   try {
     const { uploadId, customerCode } = req.body;
+
+    console.log(`\n${"=".repeat(70)}`);
+    console.log(`🔄 CONVERSION: Upload ${uploadId}`);
+    console.log(`${"=".repeat(70)}\n`);
 
     if (!customerCode) {
       return res.status(400).json({ 
@@ -276,229 +385,186 @@ export const convertOrders = async (req, res, next) => {
         message: "Customer code is required" 
       });
     }
-    
+
     const upload = await OrderUpload.findOne({ 
       _id: uploadId, 
       userId: req.user.id 
     });
-    
+
     if (!upload) {
-      return res.status(404).json({ message: "Upload not found" });
+      return res.status(404).json({ 
+        success: false,
+        message: "Upload not found" 
+      });
     }
 
-    // ✅ FETCH CUSTOMER FROM MASTER
     const customer = await CustomerMaster.findOne({ customerCode }).lean();
     if (!customer) {
       return res.status(404).json({ 
         success: false, 
-        message: "Customer not found in master database" 
+        message: "Customer not found" 
       });
     }
-    
-    const sourceRows = upload.extractedData.dataRows;
-   const schemes = await SchemeMaster.find({ isActive: true }).lean();
-console.log("🔥 SCHEMES FOUND FOR CONVERSION:", schemes.length);
 
-    
+    console.log(`✅ Customer: ${customer.customerName}\n`);
+
+    const schemes = await SchemeMaster.find({ isActive: true }).lean();
+    console.log(`✅ Loaded ${schemes.length} schemes\n`);
+
+    const sourceRows = upload.extractedData.dataRows;
     const output = [];
     const errors = [];
     const schemeRows = [];
-let totalFreeQty = 0;
+    let totalFreeQty = 0;
 
-    sourceRows.forEach((row, idx) => {
+    console.log(`⏳ Processing ${sourceRows.length} rows...\n`);
+
+    for (let i = 0; i < sourceRows.length; i++) {
+      const row = sourceRows[i];
+      const rowNum = i + 1;
+
       const qty = Number(row.ORDERQTY);
       if (isNaN(qty) || qty <= 0) {
         errors.push({
-          rowNumber: idx + 2,
+          rowNumber: rowNum,
           field: "ORDERQTY",
-          error: "Invalid quantity"
+          error: "Invalid quantity",
+          value: row.ORDERQTY
         });
-        return;
+        continue;
       }
-      
-      // ✅ GET BOX PACK FROM MATCHED PRODUCT (FROM MASTER DB)
+
       const boxPack = row["BOX PACK"] || 0;
-      
-      // ✅ RECALCULATE PACK: ceil(QTY / BOX PACK)
       const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
-      
-      // ✅ APPLY SCHEME (internal only)
-     const schemeResult = applyScheme({
-  productCode: row.SAPCODE,
-  orderQty: qty,
-  itemDesc: row.ITEMDESC,
-  division: row.DVN,
-  schemes
-});
+
+      const schemeResult = applyScheme({
+        productCode: row.SAPCODE,
+        orderQty: qty,
+        itemDesc: row.ITEMDESC,
+        division: row.DVN,
+        schemes
+      });
 
       if (schemeResult.schemeApplied) {
-  console.log("✅ SCHEME APPLIED", {
-    product: row.SAPCODE,
-    qty,
-    freeQty: schemeResult.freeQty,
-    division: row.DVN
-  });
-}
+        schemeRows.push({
+          productCode: row.SAPCODE,
+          productName: row.ITEMDESC,
+          orderQty: qty,
+          freeQty: schemeResult.freeQty || 0,
+          schemePercent: schemeResult.schemePercent || 0,
+          division: row.DVN || ""
+        });
+        totalFreeQty += schemeResult.freeQty || 0;
+      }
 
-      console.log(`📦 Row ${idx + 1}: QTY=${qty}, BoxPack=${boxPack}, Pack=${pack}`);
-      
-      if (schemeResult.schemeApplied) {
-  schemeRows.push({
-    productCode: row.SAPCODE,
-    productName: row.ITEMDESC,
-    orderQty: qty,
-    freeQty: schemeResult.freeQty || 0,
-    schemePercent: schemeResult.schemePercent || 0,
-    division: row.DVN || ""
-  });
+      output.push({
+        CODE: customer.customerCode,
+        "CUSTOMER NAME": customer.customerName,
+        SAPCODE: row.SAPCODE || "",
+        ITEMDESC: row.ITEMDESC,
+        ORDERQTY: qty,
+        "BOX PACK": boxPack,
+        PACK: pack,
+        DVN: row.DVN || "",
+        _hasScheme: schemeResult.schemeApplied || false
+      });
+    }
 
-  totalFreeQty += schemeResult.freeQty || 0;
-}
+    console.log(`\n📊 Conversion complete:`);
+    console.log(`   Rows: ${output.length}`);
+    console.log(`   Schemes: ${schemeRows.length}`);
+    console.log(`   Free qty: ${totalFreeQty}\n`);
 
-output.push({
-  CODE: customer.customerCode,
-  "CUSTOMER NAME": customer.customerName,
-  SAPCODE: row.SAPCODE || "",
-  ITEMDESC: row.ITEMDESC,
-  ORDERQTY: qty,
-  "BOX PACK": boxPack,
-  PACK: pack,
-  DVN: row.DVN || "",
-  _hasScheme: schemeResult.schemeApplied || false
-});
-
-    });
-    
     if (!output.length) {
       return res.status(400).json({ 
+        success: false,
         message: "No valid rows", 
         errors 
       });
     }
-    
-    // ✅ GENERATE EXCEL
+
+    // Generate Excel
     fs.mkdirSync("uploads", { recursive: true });
-    const fileName = `order-training-${upload._id}.xlsx`;
+    
+    const fileName = `order-${customer.customerCode}-${Date.now()}.xlsx`;
     const filePath = path.join("uploads", fileName);
-    
+
     const wb = XLSX.utils.book_new();
-    
     const wsData = output.map(row => {
       const { _hasScheme, ...cleanRow } = row;
       return cleanRow;
     });
-    
+
     const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+
+    // Style headers
     TEMPLATE_COLUMNS.forEach((_, colIdx) => {
-  const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
-  if (ws[cellRef]) {
-    ws[cellRef].s = headerStyle;
-  }
-});
-
-    // ✅ YELLOW HIGHLIGHTING FOR SCHEMES
-    if (!ws['!rows']) ws['!rows'] = [];
-    
-output.forEach((row, idx) => {
-  const excelRow = idx + 1;
-
-  TEMPLATE_COLUMNS.forEach((col, colIdx) => {
-    const cellRef = XLSX.utils.encode_cell({
-      r: excelRow,
-      c: colIdx
+      const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+      if (ws[cellRef]) ws[cellRef].s = headerStyle;
     });
 
-    if (!ws[cellRef]) ws[cellRef] = { v: "" };
+    // Style rows
+    output.forEach((row, idx) => {
+      const excelRow = idx + 1;
+      TEMPLATE_COLUMNS.forEach((col, colIdx) => {
+        const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
+        if (!ws[cellRef]) ws[cellRef] = { v: "" };
 
-    // BASE STYLE
-    let style = normalCellStyle;
-
-    // ORDERQTY column always yellow
-    if (col === "ORDERQTY") {
-      style = qtyCellStyle;
-    }
-
-    // SCHEME ROW overrides background but keeps borders
-    if (row._hasScheme) {
-      style = {
-        ...style,
-        fill: schemeRowStyle.fill
-      };
-    }
-
-    ws[cellRef].s = style;
-  });
-});
-
+        let style = normalCellStyle;
+        if (col === "ORDERQTY") style = qtyCellStyle;
+        if (row._hasScheme) {
+          style = { ...style, fill: schemeRowStyle.fill };
+        }
+        ws[cellRef].s = style;
+      });
+    });
 
     ws["!cols"] = [
-  { wch: 14 }, // CODE
-  { wch: 28 }, // CUSTOMER NAME
-  { wch: 14 }, // SAPCODE
-  { wch: 40 }, // ITEMDESC
-  { wch: 10 }, // ORDERQTY
-  { wch: 10 }, // BOX PACK
-  { wch: 10 }, // PACK
-  { wch: 10 }  // DVN
-];
+      { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 40 },
+      { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }
+    ];
 
     XLSX.utils.book_append_sheet(wb, ws, "Order Training");
     XLSX.writeFile(wb, filePath);
-    
-    // ✅ UPDATE RECORD
+
+    // Update database
     upload.status = "CONVERTED";
     upload.outputFile = fileName;
     upload.recordsProcessed = output.length;
     upload.recordsFailed = errors.length;
-   upload.convertedData = {
-  rows: output.map(row => ({
-    ...row,
-    hasScheme: row._hasScheme === true
-  }))
-};
-
+    upload.convertedData = {
+      rows: output.map(row => ({ ...row, hasScheme: row._hasScheme === true }))
+    };
     upload.customerCode = customer.customerCode;
     upload.customerName = customer.customerName;
-
-    upload.schemeSummary = {
-  count: schemeRows.length,
-  totalFreeQty
-};
-console.log("🟡 TOTAL SCHEME ROWS:", schemeRows.length);
-console.log("🟡 SCHEME ROWS:", schemeRows);
-
-upload.schemeDetails = schemeRows;
+    upload.schemeSummary = { count: schemeRows.length, totalFreeQty };
+    upload.schemeDetails = schemeRows;
 
     await upload.save();
-    
-    console.log(`✅ Converted: ${output.length} rows for ${customer.customerName}`);
-    
-   res.json({
-  success: true,
-  status: "CONVERTED",
-  uploadId: upload._id,
-  recordsProcessed: output.length,
-  errors: errors.length,
 
-  schemeSummary: {
-    count: schemeRows.length,
-    totalFreeQty
-  },
+    console.log(`✅ Saved: ${fileName}\n`);
 
-  convertedData: output.map(({ _hasScheme, ...row }) => row)
-});
+    res.json({
+      success: true,
+      status: "CONVERTED",
+      uploadId: upload._id,
+      recordsProcessed: output.length,
+      errors: errors.length,
+      schemeSummary: { count: schemeRows.length, totalFreeQty },
+      convertedData: output.map(({ _hasScheme, ...row }) => row),
+      downloadUrl: `/api/orders/download/${upload._id}`
+    });
 
-
-    
   } catch (err) {
-    console.error('❌ Conversion Error:', err);
+    console.error('\n❌ CONVERSION ERROR:', err);
     next(err);
   }
 };
 
 /* =====================================================
-   OTHER ENDPOINTS
+   OTHER ENDPOINTS (same as before)
 ===================================================== */
+
 export const getOrderById = async (req, res, next) => {
   try {
     const upload = await OrderUpload.findOne({
@@ -507,20 +573,13 @@ export const getOrderById = async (req, res, next) => {
     }).lean();
 
     if (!upload) {
-      return res.status(404).json({
-        success: false,
-        message: "Order not found"
-      });
+      return res.status(404).json({ success: false, message: "Order not found" });
     }
 
     const schemeDetails = upload.schemeDetails || [];
-
     const schemeSummary = {
       count: schemeDetails.length,
-      totalFreeQty: schemeDetails.reduce(
-        (sum, s) => sum + (s.freeQty || 0),
-        0
-      )
+      totalFreeQty: schemeDetails.reduce((sum, s) => sum + (s.freeQty || 0), 0)
     };
 
     res.json({
@@ -528,44 +587,51 @@ export const getOrderById = async (req, res, next) => {
       status: upload.status,
       recordsProcessed: upload.recordsProcessed || 0,
       recordsFailed: upload.recordsFailed || 0,
-
       errors: upload.rowErrors || [],
       warnings: upload.rowWarnings || [],
-
       convertedData: upload.convertedData || null,
-
-      // ✅ ALWAYS RETURN
       schemeSummary,
       schemeDetails,
-
       fileName: upload.fileName,
       outputFile: upload.outputFile,
+      customerCode: upload.customerCode,
+      customerName: upload.customerName,
       createdAt: upload.createdAt,
       updatedAt: upload.updatedAt,
       _id: upload._id
     });
-
   } catch (err) {
     next(err);
   }
 };
 
-
-
 export const getOrderHistory = async (req, res) => {
-  const history = await OrderUpload.find({ userId: req.user.id })
-    .sort({ createdAt: -1 })
-    .limit(50)
-    .lean();
-  
-  res.json({
-    success: true,
-    history: history.map(h => ({
-      id: h._id,
-      fileName: h.fileName,
-      status: h.status,
-      processed: h.recordsProcessed || 0,
-      createdAt: h.createdAt
-    }))
-  });
+  try {
+    const history = await OrderUpload.find({ userId: req.user.id })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .lean();
+
+    res.json({
+      success: true,
+      history: history.map(h => ({
+        id: h._id,
+        fileName: h.fileName,
+        status: h.status,
+        processed: h.recordsProcessed || 0,
+        failed: h.recordsFailed || 0,
+        customerName: h.customerName,
+        createdAt: h.createdAt
+      }))
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export default {
+  extractOrderFields,
+  convertOrders,
+  getOrderById,
+  getOrderHistory
 };
