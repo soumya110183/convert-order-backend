@@ -50,6 +50,14 @@ function extractBrandRoot(text = "") {
     .filter(Boolean)[0] || "";
 }
 
+function isComboStrength(text = "") {
+  return /\d+\s*\/\s*\d+/.test(text);
+}
+
+function extractCombo(text = "") {
+  const m = text.match(/(\d+)\s*\/\s*(\d+)/);
+  return m ? `${m[1]}/${m[2]}` : null;
+}
 
 /**
  * Clean invoice description - MINIMAL CLEANING
@@ -99,34 +107,43 @@ function cleanInvoiceProduct(text) {
 
 function normalizeStrength(strength = "") {
   if (!strength) return "";
-  
+
   return String(strength)
     .toUpperCase()
     .replace(/\s+/g, "")
-    .replace(/MG$|ML$|MCG$/, (unit) => unit) // Keep unit
+    // normalize units inside combo
+    .replace(/MG|ML|MCG/g, "")
+    // normalize separators
+    .replace(/\/+/g, "/")
     .trim();
 }
+
 
 /* =====================================================
    FIX 3: RELAXED COMPATIBILITY CHECKS
 ===================================================== */
 
 function hasCompatibleStrength(invoiceText, productName) {
+  const invCombo = extractCombo(invoiceText);
+  const prodCombo = extractCombo(productName);
+
+  // 🚨 HARD BLOCK: combo vs non-combo
+  if (invCombo && !prodCombo) return false;
+  if (!invCombo && prodCombo) return false;
+
+  // 🚨 HARD BLOCK: combo mismatch
+  if (invCombo && prodCombo && invCombo !== prodCombo) return false;
+
+  // fallback to single-strength logic
   const invStrength = normalizeStrength(extractStrength(invoiceText));
   const prodStrength = normalizeStrength(extractStrength(productName));
 
-  // Both missing → compatible
   if (!invStrength && !prodStrength) return true;
+  if (invStrength && prodStrength) return invStrength === prodStrength;
 
-  // Both present → must match
-  if (invStrength && prodStrength) {
-    return invStrength === prodStrength;
-  }
-
-  // One has strength, other doesn't → ALLOW
-  // This handles: "METAPRO 50MG TAB" matching "METAPRO 50MG TABS"
   return true;
 }
+
 
 function hasCompatibleVariant(invoiceText, productName) {
   // Extract variant keywords (OD, SR, FORTE, etc.)
