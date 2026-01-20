@@ -116,10 +116,73 @@ export async function previewConvertedOrders(req, res, next) {
   }
 }
 
+export async function downloadSchemeFile(req, res, next) {
+  try {
+    const { id } = req.params;
+
+    const upload = await OrderUpload.findOne({
+      _id: id,
+      userId: req.user.id
+    }).lean(); // ✅ VERY IMPORTANT
+
+    if (!upload) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload not found"
+      });
+    }
+
+    const schemeDetails = (upload.schemeDetails || []).map(s => ({
+      "Product Code": s.productCode,
+      "Product Name": s.productName,
+      "Order Qty": s.orderQty,
+      "Free Qty": s.freeQty,
+      "Scheme %": s.schemePercent,
+      "Division": s.division
+    }));
+
+    if (schemeDetails.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "No scheme details found for this order"
+      });
+    }
+
+    // Generate Excel
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.json_to_sheet(schemeDetails);
+
+    XLSX.utils.book_append_sheet(wb, ws, "Scheme Summary");
+
+    const fileName = `scheme-summary-${upload.customerCode}-${Date.now()}.xlsx`;
+
+    const buffer = XLSX.write(wb, {
+      type: "buffer",
+      bookType: "xlsx"
+    });
+
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=${fileName}`
+    );
+
+    res.send(buffer);
+
+  } catch (err) {
+    next(err);
+  }
+}
+
+
 /* =====================================================
    EXPORTS
 ===================================================== */
 export default {
   downloadConvertedFile,
+  downloadSchemeFile,
   previewConvertedOrders
 }

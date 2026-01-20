@@ -19,24 +19,14 @@ import User from "../../models/User.js";
  * =====================================================
  */
 
-/* =====================================================
-   ADMIN GUARD (OPTIONAL IF DONE IN ROUTER)
-===================================================== */
-function ensureAdmin(req, res) {
-  if (req.user?.role !== "admin") {
-    res.status(403).json({ success: false, message: "Admin access required" });
-    return false;
-  }
-  return true;
-}
-
+// Admin guard handled by middleware
 /* =====================================================
    UPLOAD MASTER EXCEL
    POST /api/admin/master/upload
 ===================================================== */
 export async function uploadMaster(req, res, next) {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     if (!req.file) {
       return res.status(400).json({
@@ -80,7 +70,7 @@ export async function uploadMaster(req, res, next) {
 ===================================================== */
 export async function getMasterStats(req, res, next) {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const [customers, products] = await Promise.all([
       CustomerMaster.countDocuments(),
@@ -106,7 +96,7 @@ export async function getMasterStats(req, res, next) {
 ===================================================== */
 export async function exportMaster(req, res, next) {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();
     const products = await ProductMaster.find().sort({ productCode: 1 }).lean();
@@ -160,7 +150,7 @@ export async function exportMaster(req, res, next) {
 ===================================================== */
 export async function getAuditHistory(req, res, next) {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Number(req.query.limit) || 20, 100);
@@ -202,7 +192,7 @@ export async function getAuditHistory(req, res, next) {
 ===================================================== */
 export async function getAdminDashboard(req, res, next) {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const [
       customerCount,
@@ -220,17 +210,25 @@ export async function getAdminDashboard(req, res, next) {
       InvoiceAudit.countDocuments({ status: "FAILED" })
     ]);
 
+    const successRate =
+      uploadCount === 0
+        ? 100
+        : ((successCount / uploadCount) * 100).toFixed(1);
+
     res.json({
       success: true,
-      stats: {
+      users: {
+        total: userCount
+      },
+      uploads: {
+        total: uploadCount,
+        completed: successCount, // "successfulConversions"
+        failed: failCount,
+        successRate: Number(successRate)
+      },
+      masterData: {
         customers: customerCount,
-        products: productCount,
-        users: userCount,
-        uploads: uploadCount,
-        successRate:
-          uploadCount === 0
-            ? 100
-            : ((successCount / uploadCount) * 100).toFixed(1)
+        products: productCount
       }
     });
 
@@ -245,7 +243,7 @@ export async function getAdminDashboard(req, res, next) {
 ===================================================== */
 export async function searchMasterData(req, res, next) {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const q = (req.query.q || "").trim();
     const safeQ = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

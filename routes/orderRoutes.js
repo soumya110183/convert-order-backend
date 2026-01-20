@@ -9,10 +9,12 @@ import {
   convertOrders,
   getOrderHistory,
   getOrderById,
+  checkSchemes
 } from "../controllers/orderController.js";
 
 import {
   downloadConvertedFile,
+  downloadSchemeFile,
   previewConvertedOrders
 } from "../controllers/staffDownloadController.js";
 
@@ -44,11 +46,15 @@ router.post("/extract", upload.single("file"), extractOrderFields);
 // Step 2: Convert
 router.post("/convert", convertOrders);
 
+// Step 2b: Check Schemes
+router.post("/check-schemes", checkSchemes);
+
 // Step 3: History (list)
 router.get("/history", getOrderHistory);
 
 // Step 4: Download (MOST SPECIFIC FIRST)
 router.get("/download/:id", downloadConvertedFile);
+router.get("/:id/scheme-file", downloadSchemeFile);
 
 // Step 5: Preview
 router.get("/preview/:id", previewConvertedOrders);

@@ -17,20 +17,36 @@ function normalize(text) {
 
 // Calculate similarity score (0-1)
 function similarity(str1, str2) {
+  if (!str1 || !str2) return 0;
+
   const s1 = normalize(str1);
   const s2 = normalize(str2);
 
+  if (!s1 || !s2) return 0;
   if (s1 === s2) return 1.0;
-  if (s1.includes(s2) || s2.includes(s1)) return 0.9;
 
-  const words1 = s1.split(/\s+/);
-  const words2 = s2.split(/\s+/);
-  
-  const common = words1.filter(w => words2.includes(w));
+  // Remove noise words
+  const words1 = s1
+    .split(/\s+/)
+    .filter(w => !NOISE_WORDS.includes(w) && w.length > 1);
+
+  const words2 = s2
+    .split(/\s+/)
+    .filter(w => !NOISE_WORDS.includes(w) && w.length > 1);
+
+  const set2 = new Set(words2);
+  const common = words1.filter(w => set2.has(w));
+
   if (common.length === 0) return 0;
+
+  // Containment boost
+  if (words1.every(w => set2.has(w)) || words2.every(w => words1.includes(w))) {
+    return 0.95;
+  }
 
   return (common.length * 2) / (words1.length + words2.length);
 }
+
 
 /**
  * Find matching master order for invoice item

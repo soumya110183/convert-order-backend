@@ -198,16 +198,18 @@ export const uploadMasterDatabase = async (req, res) => {
 
 const productOps = productRows
   .map(r => {
-    const productCode = r["sap code"]?.toString().trim();
-    const rawProductName = r["item desc"]?.toString().trim();
-    const division = r["dvn"]?.toString().trim();
+    // Database.xls headers: Sap Code, Item Desc, Qty, Box Pack, Pack, DVN
+    const productCode = (r["Sap Code"] || r["sap code"] || r["SAP CODE"])?.toString().trim();
+    const rawProductName = (r["Item Desc"] || r["item desc"] || r["ITEM DESC"])?.toString().trim();
+    const division = (r["DVN"] || r["dvn"] || r["Dvn"])?.toString().trim();
     
-    // ✅ EXTRACT PACK AND BOX PACK FROM EXCEL
-    const pack = Number(r["pack"] || r["Pack"] || r["PACK"] || 0);
-    const boxPack = Number(r["box pack"] || r["Box Pack"] || r["BOX PACK"] || 0);
+    // ✅ EXTRACT PACK AND BOX PACK FROM EXCEL (Strict matching)
+    const pack = Number(r["Pack"] || r["pack"] || r["PACK"] || 0);
+    const boxPack = Number(r["Box Pack"] || r["box pack"] || r["BOX PACK"] || 0);
 
     if (!productCode || !rawProductName) return null;
 
+    // Use shared extraction logic
     const { name, strength, variant } = splitProduct(rawProductName);
 
     if (!name) {
@@ -218,12 +220,6 @@ const productOps = productRows
     const cleanedProductName = [name, strength, variant]
       .filter(Boolean)
       .join(" ");
-
-    console.log(
-      `📦 Parsing: "${rawProductName}" →`,
-      `Base="${name}", Strength="${strength || "-"}", Variant="${variant || "-"}"`,
-      `Pack=${pack}, BoxPack=${boxPack}`
-    );
 
     return {
       updateOne: {
@@ -237,8 +233,8 @@ const productOps = productRows
             variant: variant || null,
             cleanedProductName,
             division: division || "",
-            pack: pack,           // ✅ FROM EXCEL
-            boxPack: boxPack      // ✅ FROM EXCEL
+            pack: pack,           // ✅ Correctly mapped
+            boxPack: boxPack      // ✅ Correctly mapped
           }
         },
         upsert: true

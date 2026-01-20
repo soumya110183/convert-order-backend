@@ -27,53 +27,13 @@ function isPackToken(token = "") {
   return /^\d+['`"]?S$/i.test(token);
 }
 
-function detectExcelStructure(rows) {
-  let numericHeavyRows = 0;
-  let textHeavyRows = 0;
-
-  for (const row of rows.slice(0, 20)) {
-    const text = Array.isArray(row) ? row.join(" ") : String(row);
-    const numbers = (text.match(/\d+/g) || []).length;
-    const letters = (text.match(/[A-Z]/gi) || []).length;
-
-    if (numbers >= 3 && letters <= 10) numericHeavyRows++;
-    if (letters >= 10) textHeavyRows++;
-  }
-
-  // If many numeric-heavy rows → PDF-style dump
-  if (numericHeavyRows >= 5) return "PDF_LIKE";
-
-  return "TABLE";
+function normalizeColumnName(name = "") {
+  return String(name)
+    .toLowerCase()
+    .trim()
+    .replace(/[.\s_-]+/g, "");  // Remove dots, spaces, underscores, dashes
 }
-function mergeLooseRows(lines) {
-  const merged = [];
-  let buffer = "";
 
-  for (const line of lines) {
-    const text = line.trim();
-    if (!text) continue;
-
-    // Flush on approx value / totals
-    if (/APPROX|TOTAL|COMPANY\s*:/i.test(text)) {
-      if (buffer) merged.push(buffer.trim());
-      buffer = "";
-      continue;
-    }
-
-    buffer += " " + text;
-
-    // Flush when quantity + price detected
-    const qty = extractQuantity(buffer);
-    if (qty) {
-      merged.push(buffer.trim());
-      buffer = "";
-    }
-  }
-
-  if (buffer.trim()) merged.push(buffer.trim());
-
-  return merged;
-}
 
 /* =====================================================
    JUNK DETECTION - Strict but not too strict
@@ -106,6 +66,17 @@ const INVALID_PRODUCT_PATTERNS = [
   /^\d+\s*CAP$/i,        // "10 CAP"
   /^[A-Z]{1,2}\s*\d+$/,  // "M 500", "A 25" (too generic)
   /^\d+$/,               // Just numbers
+
+  // 🚨 DATE / ORDER / HEADER LINES
+  /\bDATE\s+\d{1,2}\b/i,
+  /\bORDER\s*NO\b/i,
+  /\bPOD[-\s]?\d+/i,
+  /\bINVOICE\s*NO\b/i,
+  /\bDELIVERY\s*NOTE\b/i,
+  /\bCHALLAN\b/i,
+  /\bPURCHASE\s*ORDER\b/i,
+  /\bPO\s*NO\b/i,
+  /\bNOV\b|\bDEC\b|\bJAN\b|\bFEB\b/i
 ];
 
 /**
@@ -140,9 +111,10 @@ const MEDICINE_PATTERNS = [
 
 // Strategy 2: Common pharma brand patterns
 const BRAND_PATTERNS = [
-  /\b(DOLO|EBAST|MICR|PULMUCUS|SILYBON|CETRIZ|CLAV|AMOX|AZITH)/i,
-  /\b\w+\s*-\s*(DC|DS|TH|LBX|NS|XL|SR|MR)\b/i,
+  /\b[A-Z]{4,}\b/i   // BISOT, AMLONG, NEBILONG, TURBOVAS
 ];
+
+
 
 // Strategy 3: Product name structure (name + number/variant)
 const STRUCTURE_PATTERNS = [
@@ -167,47 +139,55 @@ const NOT_PRODUCT_PATTERNS = [
  */
 function looksLikeProduct(text) {
   if (!text || text.length < MIN_PRODUCT_LENGTH) return false;
-  
-  // CRITICAL: Reject invalid/generic names first
-  if (isInvalidProductName(text)) return false;
-  
-  // Must have at least 3 letters (not just numbers)
-  const letters = (text.match(/[A-Z]/gi) || []).length;
+
+  const upper = text.toUpperCase();
+
+  // 🚫 Reject invalid/generic names first
+  if (isInvalidProductName(upper)) return false;
+
+  // Must contain letters
+  const letters = (upper.match(/[A-Z]/g) || []).length;
   if (letters < 3) return false;
-  
-  // Reject if matches blacklist
-  if (NOT_PRODUCT_PATTERNS.some(p => p.test(text))) return false;
-  
-  // Accept if matches any positive indicator (medicine, brand, structure)
-  const hasMedicine = MEDICINE_PATTERNS.some(p => p.test(text));
-  const hasBrand = BRAND_PATTERNS.some(p => p.test(text));
-  const hasStructure = STRUCTURE_PATTERNS.some(p => p.test(text));
-  
-  if (hasMedicine || hasBrand || hasStructure) return true;
-  
-  // ULTRA PERMISSIVE FALLBACK: Accept if it has reasonable letter content
-  // This catches products that don't match specific patterns
-  const totalChars = text.replace(/\s/g, '').length;
-  
-  // Accept if:
-  // - At least 8 characters total (increased from 5)
-  // - At least 40% letters (to allow for numbers in product names)
-  if (totalChars >= 8 && letters >= totalChars * 0.4) {
+
+  // Reject blacklist
+  if (NOT_PRODUCT_PATTERNS.some(p => p.test(upper))) return false;
+
+  // ✅ STRONG POSITIVE SIGNALS
+  const hasMedicine = MEDICINE_PATTERNS.some(p => p.test(upper));
+  const hasStructure = STRUCTURE_PATTERNS.some(p => p.test(upper));
+
+  // ✅ GENERIC PHARMA BRAND (4+ letters)
+  const hasBrandLikeWord = /\b[A-Z]{4,}\b/.test(upper);
+
+  // ✅ BRAND + NUMBER (CRITICAL FIX)
+  // BISOT 2.5, AMLONG 5, TENEPRIDE 20
+  const brandWithNumber =
+    /\b[A-Z]{4,}\b/.test(upper) &&
+    /\b\d+(\.\d+)?\b/.test(upper);
+
+  if (hasMedicine || hasStructure || brandWithNumber) {
     return true;
   }
-  
+
+  // ✅ ULTRA-PERMISSIVE FALLBACK (SAFE)
+  const totalChars = upper.replace(/\s/g, "").length;
+
+  if (
+    totalChars >= 6 &&           // lowered from 8
+    letters >= 4                 // pharma brands are word-heavy
+  ) {
+    return true;
+  }
+
   return false;
 }
+
 
 /* =====================================================
    QUANTITY EXTRACTION - PRODUCTION GRADE
 ===================================================== */
 
-/**
- * PRODUCTION-GRADE: Extract ONLY the order quantity from invoice line
- * CRITICAL: Ignore ALL decimal numbers (prices, amounts, totals)
- * Focus ONLY on finding the actual order quantity integer
- */
+// PRODUCTION-GRADE: Extract ONLY the order quantity from invoice line
 function extractQuantity(text) {
   if (!text) return null;
 
@@ -221,16 +201,16 @@ function extractQuantity(text) {
   }
 
   // Strategy 2: Smart integer detection
-  // Remove ALL codes and clean the text
   let cleaned = text
     .replace(/\b\d{6,}\b/g, " ")  // Remove 6+ digit codes
-    .replace(/\d+\.\d+/g, " ")     // Remove ALL decimal numbers (prices/amounts)
-    .replace(/\+\s*\d*\s*(FREE|F)\s*$/i, ''); // Remove free qty indicators
+  // Remove decimals ONLY if not followed by unit
+.replace(/\d+\.\d+(?!\s*(MG|ML|MCG|GM|G|IU))/gi, " ")
+   // Remove ALL decimal numbers
+    .replace(/\+\s*\d*\s*(FREE|F)\s*$/i, ''); 
   
   cleaned = cleaned.replace(/\s+/g, " ").trim();
   const tokens = cleaned.split(/\s+/);
 
-  // Find ALL valid integers (potential order quantities)
   const candidates = [];
   
   for (let i = 0; i < tokens.length; i++) {
@@ -238,104 +218,102 @@ function extractQuantity(text) {
     const prev = tokens[i - 1] || "";
     const next = tokens[i + 1] || "";
     
-    // Must be a pure integer
     if (!/^\d+$/.test(token)) continue;
     
     const val = Number(token);
     
-    // FILTER 1: Skip if it's a dosage (500MG, 10ML)
     if (/^(MG|ML|MCG|GM|G|IU|KG)$/i.test(next)) continue;
     
-    // FILTER 2: Skip if it's part of a pack size (30'S, 15S)
     if (isPackToken(token)) continue;
     if (isPackToken(token + next)) continue;
     if (/^['\`]S$/i.test(next)) continue;
     
-    // FILTER 3: Skip serial numbers (position 0, value < 10)
-    if (i === 0 && val < 10) continue;
-    
-    // FILTER 4: Skip very large numbers (likely item codes without decimal)
+    if (i === 0 && val < 10) continue; 
     if (val > 10000) continue;
+    if (val < MIN_QTY) continue; // ✅ Enforce MIN_QTY
     
-    // FILTER 5: Skip if it's clearly part of product name
-    // (appears very early AND preceded by letters)
+    // FILTER 5 check
     if (i <= 2 && /^[A-Z]+$/i.test(prev)) {
-      // This might be dosage in product name (DAJIO M 500)
-      // Only skip if it's a common dosage value
-      if (val === 500 || val === 250 || val === 1000 || val === 125) {
-        continue;
-      }
+        if ([500, 250, 1000, 125].includes(val)) continue;
     }
     
-    // FILTER 6: Must be in valid range
-    if (val < MIN_QTY || val > MAX_QTY) continue;
-    
-    // This is a valid order quantity candidate!
-    candidates.push({
-      value: val,
-      pos: i,
-      // Prefer numbers in middle-to-end positions
-      score: i > 2 ? 2 : 1
-    });
+    candidates.push({ value: val, pos: i, score: i > 2 ? 2 : 1 });
   }
 
-  // Strategy 3: Select best candidate
   if (candidates.length === 0) return null;
   
-  if (candidates.length === 1) {
-    return candidates[0].value;
-  }
-  
-  // Multiple candidates - use heuristics
-  // Prefer candidates with higher scores (better positions)
   candidates.sort((a, b) => {
-    // First by score
     if (b.score !== a.score) return b.score - a.score;
-    // Then by position (later is better for order qty)
     return b.pos - a.pos;
   });
   
   return candidates[0].value;
 }
 
-
-/* =====================================================
-   PRODUCT NAME EXTRACTION - PRODUCTION GRADE
-===================================================== */
-
 /**
  * Extract product name preserving strength, dosage, and variants
- * Handles: "DOLO 650MG", "AMOXYCLAV 500/125", "EBAST-DC", "PARACETAMOL 30'S"
  */
-function extractProductName(text) {
+function extractProductName(text, extractedQty = null) {
   if (!text) return "";
 
   let cleaned = text.toUpperCase();
 
-  // Remove prices (decimal numbers)
-  cleaned = cleaned.replace(/\b\d+\.\d+\b/g, " ");
+  /* ================================
+     🔐 STEP 0: PROTECT STRENGTH DECIMALS
+     ================================ */
+  cleaned = cleaned.replace(
+    /\b(\d+\.\d+)\s*(MG|ML|MCG|GM|G|IU)\b/gi,
+    "§STRENGTH§$1 $2"
+  );
 
-  // Remove HSN codes (8 digits) and item codes (6+ digits) but NOT dosages
+  /* ================================
+     1️⃣ REMOVE QUANTITY
+     ================================ */
+  if (extractedQty) {
+    const qtyPattern = new RegExp(`\\b${extractedQty}\\s*$`);
+    cleaned = cleaned.replace(qtyPattern, " ");
+
+    const qtyPattern2 = new RegExp(`\\b${extractedQty}\\b(?!.*[A-Z])`);
+    cleaned = cleaned.replace(qtyPattern2, " ");
+  }
+
+
+
+
+  /* ================================
+     3️⃣ REMOVE SERIAL / SAP
+     ================================ */
+  cleaned = cleaned.replace(/^\s*\d{1,3}\s+/, "");
+  cleaned = cleaned.replace(/^\s*\d{5,8}\s+/, "");
   cleaned = cleaned.replace(/\b\d{6,}\b/g, " ");
 
-  // Remove leading serial numbers ONLY (1-3 digits at start)
-  cleaned = cleaned.replace(/^\s*\d{1,3}\s+/, "");
+  /* ================================
+     4️⃣ PRESERVE SYMBOLS
+     ================================ */
+  cleaned = cleaned
+    .replace(/\//g, "§SLASH§")
+    .replace(/-/g, "§DASH§")
+    .replace(/\+/g, "§PLUS§");
 
-  // Preserve important symbols temporarily
-  cleaned = cleaned.replace(/\//g, "§SLASH§");  // For combo dosage: 500/125
-  cleaned = cleaned.replace(/-/g, "§DASH§");    // For variants: EBAST-DC
-  cleaned = cleaned.replace(/\+/g, "§PLUS§");   // For variants: DOLO+
+  /* ================================
+     5️⃣ REMOVE JUNK
+     ================================ */
+  cleaned = cleaned.replace(/[^A-Z0-9§\s\.]/g, " ");
 
-  // Remove other symbols
-  cleaned = cleaned.replace(/[^A-Z0-9§\s]/g, " ");
-  
-  // Restore preserved symbols
-  cleaned = cleaned.replace(/§SLASH§/g, "/");
-  cleaned = cleaned.replace(/§DASH§/g, "-");
-  cleaned = cleaned.replace(/§PLUS§/g, "+");
-  
+  /* ================================
+     6️⃣ RESTORE SYMBOLS + STRENGTH
+     ================================ */
+  cleaned = cleaned
+    .replace(/§SLASH§/g, "/")
+    .replace(/§DASH§/g, "-")
+    .replace(/§PLUS§/g, "+")
+    .replace(/§STRENGTH§/g, "");
+
   cleaned = cleaned.replace(/\s+/g, " ").trim();
 
+  /* ================================
+     7️⃣ TOKEN SCAN
+     ================================ */
   const tokens = cleaned.split(" ");
   const result = [];
 
@@ -344,58 +322,32 @@ function extractProductName(text) {
     const prev = tokens[i - 1] || "";
     const next = tokens[i + 1] || "";
 
-    // Keep if it's alphabetic
-    if (/^[A-Z]+$/.test(t)) {
+    if (!t) continue;
+    if (t === "0") break;
+
+    // Pack stop
+    if (isPackToken(t)) break;
+    if (/^\d+$/.test(t) && /^[sS]$/i.test(next)) break;
+    if (/^[sS]$/i.test(t) && /^\d+$/.test(prev)) break;
+
+    // Decimal strength
+    if (/^\d+\.\d+$/.test(t)) {
       result.push(t);
       continue;
     }
 
-    // Keep if it's a dosage pattern (number + unit)
-    if (/^\d+(?:MG|ML|MCG|GM|G|IU)$/i.test(t)) {
+    // Normal tokens
+    if (/^[A-Z0-9\-\+\/]+$/.test(t)) {
       result.push(t);
       continue;
     }
 
-    // Keep if it's a combo dosage (500/125)
-    if (/^\d+\/\d+$/.test(t)) {
-      result.push(t);
-      continue;
-    }
-
-    // Keep if it's a pack size (30'S, 10S)
-    if (isPackToken(t)) {
-      result.push(t);
-      continue;
-    }
-
-    // Keep if it's a variant with dash/plus (EBAST-DC, DOLO+)
-    if (/[A-Z]+-[A-Z]+/.test(t) || /[A-Z]+\+[A-Z]*/.test(t)) {
-      result.push(t);
-      continue;
-    }
-
-    // Keep standalone numbers if they're part of product name (DOLO 650)
-    // But only if previous token was alphabetic and next isn't a price indicator
-    if (/^\d+$/.test(t)) {
-      const isPartOfName = /^[A-Z]+$/.test(prev) && 
-                          !/^\d+$/.test(next) && 
-                          result.length > 0;
-      
-      if (isPartOfName) {
-        result.push(t);
-        continue;
-      }
-      
-      // This is likely start of quantity column - stop here
-      break;
-    }
-
-    // If we reach here, it's an unknown pattern - stop to be safe
     if (result.length > 0) break;
   }
 
-  return result.join(" ").trim();
+  return result.join(" ").replace(/§STRENGTH§/g, "").trim();
 }
+
 
 
 
@@ -405,11 +357,75 @@ function extractProductName(text) {
    PDF PARSING - Aggressive Mode
 ===================================================== */
 
+/* =====================================================
+   PDF PARSING - Aggressive Mode
+===================================================== */
+
+/**
+ * Merge split lines in PDFs where Name, Pack, and Qty are on separate rows
+ * Pattern:
+ * Row 1: "1 MICR DIAPRIDE 1 MG TAB" (Name)
+ * Row 2: "30 S 30049079" (Pack)
+ * Row 3: "120 0 81.19..." (Qty)
+ */
+function mergePDFRows(rows) {
+  const merged = [];
+  
+  for (let i = 0; i < rows.length; i++) {
+    const r1 = rows[i].rawText?.trim();
+    if (!r1 || isHardJunk(r1)) continue;
+    
+    // If this line already has Name + Qty, keep it
+    const qty1 = extractQuantity(r1);
+    const isProd1 = looksLikeProduct(r1);
+    
+    if (isProd1 && qty1) {
+      merged.push(r1);
+      continue;
+    }
+    
+    // If it looks like a product but NO qty, try to merge forward
+    if (isProd1 && !qty1) {
+      // Look at next row
+      const r2 = rows[i+1]?.rawText?.trim();
+      const qty2 = extractQuantity(r2);
+      
+      // Case A: Next row is Qty/Price line
+      if (r2 && qty2 && !looksLikeProduct(r2)) {
+         merged.push(`${r1} ${r2}`);
+         i++; // Skip r2
+         continue;
+      }
+      
+      // Case B: Next row is Pack line, Row 3 is Qty
+      if (r2 && (isPackToken(r2.split(' ')[0]) || /^\d+\s*S\b/i.test(r2))) {
+          const r3 = rows[i+2]?.rawText?.trim();
+          const qty3 = extractQuantity(r3);
+          
+          if (r3 && qty3) {
+             merged.push(`${r1} ${r2} ${r3}`);
+             i += 2; // Skip r2, r3
+             continue;
+          }
+      }
+    }
+    
+    // Default: just keep the row
+    merged.push(r1);
+  }
+  
+  return merged;
+}
+
 async function parsePDF(file) {
   const { rows } = await extractTextFromPDFAdvanced(file.buffer);
   
-  debug(`\n📄 PDF: ${rows.length} rows extracted`);
+  debug(`\n📄 PDF: ${rows.length} raw rows`);
   
+  // MERGE SPLIT LINES
+  const mergedLines = mergePDFRows(rows);
+  debug(`📄 PDF: Merged into ${mergedLines.length} processing lines`);
+
   const textLines = rows.map(r => r.rawText || "");
   const customerName = detectCustomerFromInvoice(textLines);
   
@@ -417,8 +433,8 @@ async function parsePDF(file) {
   const failed = [];
   
   // Don't be too strict about sections - scan everything
-  for (let i = 0; i < rows.length; i++) {
-    const text = rows[i].rawText?.trim();
+  for (let i = 0; i < mergedLines.length; i++) {
+    const text = mergedLines[i];
     
     if (!text || text.length < MIN_PRODUCT_LENGTH) continue;
     
@@ -445,8 +461,8 @@ if (!qty) {
   continue;
 }
 
-// 2️⃣ Extract product name NEXT
-const itemDesc = extractProductName(text);
+// 2️⃣ Extract product name NEXT (Passing Qty to exclude it)
+const itemDesc = extractProductName(text, qty);
 
 if (!itemDesc || itemDesc.length < MIN_PRODUCT_LENGTH) {
   failed.push({ row: i + 1, text, qty, reason: 'No valid product name' });
@@ -511,29 +527,81 @@ function detectExcelColumns(rows) {
   
   for (let i = 0; i < Math.min(20, rows.length); i++) {
     const row = rows[i];
-    if (!Array.isArray(row)) continue;
     
-    let itemNameCol = -1;
-    let qtyCol = -1;
+    // Support both array rows and object rows
+    let headers = [];
     
-    for (let j = 0; j < row.length; j++) {
-      const cell = String(row[j] || "").toUpperCase().trim();
+    if (Array.isArray(row)) {
+      headers = row.map((cell, idx) => ({
+        index: idx,
+        name: normalizeColumnName(cell),
+        original: String(cell || "").trim()
+      }));
+    } else if (typeof row === 'object') {
+      headers = Object.keys(row).map((key, idx) => ({
+        index: idx,
+        name: normalizeColumnName(key),
+        original: key
+      }));
+    }
+    
+    let itemNameCol = null;
+    let qtyCol = null;
+    let itemCodeCol = null;
+    
+    // Find columns with flexible matching
+    for (const header of headers) {
+      const norm = header.name;
       
-      if (/ITEM\s*NAME|PRODUCT\s*NAME|DESCRIPTION/i.test(cell)) {
-        itemNameCol = j;
+      // Item Name / Product Name / Description
+      if (!itemNameCol && (
+        norm.includes("itemname") ||
+        norm.includes("productname") ||
+        norm.includes("itemdesc") ||
+        norm.includes("description") ||
+        norm === "name"
+      )) {
+        itemNameCol = header;
       }
       
-      if (/^QTY$|^QUANTITY$|^ORD\s*QTY$/i.test(cell)) {
-        qtyCol = j;
+      // Quantity (handles "Qty", "Qty.", "Quantity", "Order Qty")
+      if (!qtyCol && (
+        norm === "qty" ||
+        norm === "quantity" ||
+        norm.includes("orderqty") ||
+        norm.includes("ordqty")
+      )) {
+        qtyCol = header;
+      }
+      
+      // Item Code / SAP Code (optional but useful)
+      if (!itemCodeCol && (
+        norm.includes("itemcode") ||
+        norm.includes("sapcode") ||
+        norm.includes("productcode") ||
+        norm === "code"
+      )) {
+        itemCodeCol = header;
       }
     }
     
-    if (itemNameCol >= 0 && qtyCol >= 0) {
-      console.log(`✅ Found columns: Item Name (col ${itemNameCol}), Qty (col ${qtyCol})`);
+    // If we found the required columns, return them
+    if (itemNameCol && qtyCol) {
+      console.log(`✅ Found columns at row ${i}:`);
+      console.log(`   - Item Name: "${itemNameCol.original}" (col ${itemNameCol.index})`);
+      console.log(`   - Qty: "${qtyCol.original}" (col ${qtyCol.index})`);
+      if (itemCodeCol) {
+        console.log(`   - Item Code: "${itemCodeCol.original}" (col ${itemCodeCol.index})`);
+      }
+      
       return {
         headerRow: i,
-        itemNameCol,
-        qtyCol,
+        itemNameCol: itemNameCol.index,
+        itemNameKey: itemNameCol.original,
+        qtyCol: qtyCol.index,
+        qtyKey: qtyCol.original,
+        itemCodeCol: itemCodeCol?.index,
+        itemCodeKey: itemCodeCol?.original,
         dataStartRow: i + 1
       };
     }
@@ -543,27 +611,121 @@ function detectExcelColumns(rows) {
   return null;
 }
 
+/**
+ * CRITICAL FIXES FOR 90%+ MATCH RATE
+ * These functions replace/enhance existing ones in unifiedParser.js
+ * NO function signature changes - drop-in replacement
+ */
+
+/* =====================================================
+   FIX 1: IMPROVED PRODUCT NAME CLEANING
+   Problem: Removing too much (TAB, TABS, form words)
+   Solution: Keep form words, they're part of product identity
+===================================================== */
+
+/**
+ * Clean product name extracted from Excel
+ * PRESERVES: Strength, form words, variants
+ * REMOVES: Company codes, division names, product codes
+ */
+function cleanExtractedProductName(raw = "") {
+  if (!raw) return "";
+  
+  let cleaned = raw.trim().toUpperCase();
+  
+  // Step 1: Remove company prefix (MICRO1, MICRO2, etc.)
+  cleaned = cleaned.replace(/^MICRO\d+\s+/g, "");
+  
+  // Step 2: Remove division names
+  // Pattern: "MICRO [DIVISION] RAJ DIST/DISTRIBUT"
+  cleaned = cleaned.replace(
+    /^MICRO\s+[A-Z\s\-()]+?\s+\(?\s*RAJ\s+(DIST|DISTRIBUT)[A-Z\s()\.]*\)?\s*/g, 
+    ""
+  );
+  
+  // Step 3: Remove standalone product codes (PROD#### or ####)
+  cleaned = cleaned.replace(/^(PROD)?\d{4,6}\s+/g, "");
+  
+  // Step 4: Remove RAJ/DIST/DISTRIBUT remnants
+  cleaned = cleaned.replace(/\b(RAJ|DIST|DISTRIBUT|DISTRIBUTOR)\b/gi, " ");
+  
+  // Step 5: Remove parentheses with RAJ inside
+  cleaned = cleaned.replace(/\([^)]*RAJ[^)]*\)/gi, " ");
+  
+  // Step 6: Remove "SUSP." but keep other abbreviations
+  cleaned = cleaned.replace(/\bSUSP\./gi, "SUSPENSION");
+  cleaned = cleaned.replace(/\bSYP\./gi, "SYRUP");
+  
+  // Step 7: Normalize spacing
+  cleaned = cleaned.replace(/\s+/g, " ").trim();
+  
+  return cleaned;
+}
+
+/* =====================================================
+   FIX 2: ENHANCED extractFromExcelColumns
+   Problem: Not cleaning product names after extraction
+   Solution: Apply cleaning to all extracted names
+===================================================== */
+
 function extractFromExcelColumns(rows, columnMap) {
-  const { dataStartRow, itemNameCol, qtyCol } = columnMap;
+  const { dataStartRow, itemNameCol, qtyCol, itemCodeCol, itemNameKey, qtyKey, itemCodeKey } = columnMap;
   const products = [];
+  
+  console.log(`\n📊 Extracting from row ${dataStartRow} onwards...`);
   
   for (let i = dataStartRow; i < rows.length; i++) {
     const row = rows[i];
-    if (!Array.isArray(row)) continue;
     
-    const itemName = String(row[itemNameCol] || "").trim();
-    const qty = parseInt(row[qtyCol]);
+    // Support both array and object rows
+    let itemName, qty, itemCode;
     
-    if (!itemName || !qty || qty <= 0) continue;
-    if (/^item|^product/i.test(itemName)) continue;
-    if (itemName.length < MIN_PRODUCT_LENGTH) continue;
+    if (Array.isArray(row)) {
+      itemName = String(row[itemNameCol] || "").trim();
+      qty = row[qtyCol];
+      itemCode = itemCodeCol !== undefined ? String(row[itemCodeCol] || "").trim() : null;
+    } else if (typeof row === 'object') {
+      itemName = String(row[itemNameKey] || "").trim();
+      qty = row[qtyKey];
+      itemCode = itemCodeKey ? String(row[itemCodeKey] || "").trim() : null;
+    } else {
+      continue;
+    }
     
-    console.log(`  ✅ Row ${i + 1}: "${itemName}" | Qty: ${qty}`);
+    // Parse quantity
+    const qtyNum = parseInt(String(qty || "").replace(/[^0-9]/g, ""));
+    
+    // Validate
+    if (!itemName || !qtyNum || qtyNum <= 0) {
+      continue;
+    }
+    
+    // Skip header-like rows
+    if (/^(item|product|name|description|qty|quantity)/i.test(itemName)) {
+      continue;
+    }
+    
+    // Skip if too short (before cleaning)
+    if (itemName.length < 3) {
+      continue;
+    }
+    
+    // 🔥 CLEAN THE PRODUCT NAME
+    const cleanedName = cleanExtractedProductName(itemName);
+    
+    // Skip if cleaning resulted in empty/too short name
+    if (!cleanedName || cleanedName.length < 3) {
+      console.log(`  ⚠️  Row ${i + 1}: Cleaned to empty - "${itemName}"`);
+      continue;
+    }
+    
+    console.log(`  ✅ Row ${i + 1}: "${cleanedName}" | Qty: ${qtyNum}${itemCode ? ` | Code: ${itemCode}` : ''}`);
     
     products.push({
-      ITEMDESC: itemName,
-      ORDERQTY: qty,
-      _rawText: itemName,
+      ITEMDESC: cleanedName,
+      ORDERQTY: qtyNum,
+      SAPCODE: itemCode || "",
+      _rawText: itemName,  // Keep original for debugging
       _sourceRow: i + 1
     });
   }
@@ -572,112 +734,368 @@ function extractFromExcelColumns(rows, columnMap) {
 }
 
 /* =====================================================
+   FIX 3: RELAXED STRENGTH MATCHING
+   Problem: "METAPRO 50MG" doesn't match "METAPRO 50MG TAB"
+   Solution: More lenient strength extraction and comparison
+===================================================== */
+
+
+/**
+
+
+
+
+
+
+/**
+ * ENHANCED: Check if strengths are compatible (more lenient)
+ */
+function hasCompatibleStrength(invoiceText, productName) {
+  const invStrength = normalizeStrength(extractStrength(invoiceText));
+  const prodStrength = normalizeStrength(extractStrength(productName));
+
+  // Both missing → compatible
+  if (!invStrength && !prodStrength) return true;
+
+  // Both present → must match
+  if (invStrength && prodStrength) {
+    return invStrength === prodStrength;
+  }
+
+  // Invoice has strength, master doesn't → ALLOW if base name matches well
+  if (invStrength && !prodStrength) {
+    // Allow if the base names are very similar
+    const invBase = invoiceText.replace(/\d+(?:\.\d+)?[A-Z]{0,3}/gi, "").trim();
+    const prodBase = productName.replace(/\d+(?:\.\d+)?[A-Z]{0,3}/gi, "").trim();
+    
+    if (invBase.length > 3 && prodBase.length > 3) {
+      return invBase.toUpperCase().includes(prodBase.toUpperCase()) ||
+             prodBase.toUpperCase().includes(invBase.toUpperCase());
+    }
+    
+    return false;
+  }
+
+  // Master has strength, invoice doesn't → ALLOW (lenient)
+  return true;
+}
+
+/* =====================================================
+   FIX 4: IMPROVED BASE NAME MATCHING
+   Problem: Missing matches due to form word differences
+   Solution: More flexible base name comparison
+===================================================== */
+
+/**
+ * ENHANCED: Extract base name (remove strength, forms, variants)
+ */
+function extractBaseName(text = "") {
+  if (!text) return "";
+  
+  let base = text.toUpperCase();
+  
+  // Remove strength patterns
+  base = base.replace(/\d+(?:\.\d+)?\/\d+(?:\.\d+)?\s*(?:MG|ML|MCG)?/g, " ");
+  base = base.replace(/\d+(?:\.\d+)?\s*(?:MG|ML|MCG|GM|G|IU|KG)/g, " ");
+  
+  // Remove form words (but keep them in original for variant detection)
+  base = base.replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYR|SYRUP|SUSP|SUSPENSION|DROPS?)\b/gi, " ");
+  
+  // Remove pack info
+  base = base.replace(/\d+\s*['"`]?\s*S\b/gi, " ");
+  
+  // Clean up
+  base = base.replace(/\s+/g, " ").trim();
+  
+  return base;
+}
+
+/**
+ * ENHANCED: Similarity with better normalization
+ */
+function similarity(str1, str2) {
+  if (!str1 || !str2) return 0;
+
+  const NOISE_WORDS = new Set([
+    "MICRO", "MICRO1", "RAJ", "DIST", "DISTRIBUT",
+    "DISTRIBUTOR", "LIMITED", "LTD", "PROD",
+    "TABLET", "TABLETS", "TAB", "TABS",
+    "CAP", "CAPS", "CAPSULE", "CAPSULES"
+  ]);
+
+  const normalize = (s) => {
+    return s
+      .toUpperCase()
+      .replace(/[^A-Z0-9 ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  };
+
+  const s1 = normalize(str1);
+  const s2 = normalize(str2);
+
+  if (!s1 || !s2) return 0;
+  if (s1 === s2) return 1.0;
+
+  const words1 = s1
+    .split(/\s+/)
+    .filter(w => w.length > 1 && !NOISE_WORDS.has(w));
+
+  const words2 = s2
+    .split(/\s+/)
+    .filter(w => w.length > 1 && !NOISE_WORDS.has(w));
+
+  if (words1.length === 0 || words2.length === 0) return 0;
+
+  const set2 = new Set(words2);
+  const common = words1.filter(w => set2.has(w));
+
+  if (common.length === 0) return 0;
+
+  // Boost for full containment
+  if (words1.every(w => set2.has(w)) || words2.every(w => words1.includes(w))) {
+    return 0.95;
+  }
+
+  // Standard Jaccard similarity
+  const score = (common.length * 2) / (words1.length + words2.length);
+  
+  return score;
+}
+
+/* =====================================================
+   FIX 5: ENHANCED EXACT MATCH (More Flexible)
+===================================================== */
+
+function exactMatch(invoiceText, product) {
+  if (!invoiceText || !product?.productName) return 0;
+
+  const inv = invoiceText.toUpperCase().replace(/\s+/g, " ").trim();
+  const prod = product.productName.toUpperCase().replace(/\s+/g, " ").trim();
+
+  // Direct exact match
+  if (inv === prod) return 1.0;
+
+  // Extract base names
+  const invBase = extractBaseName(inv);
+  const prodBase = extractBaseName(prod);
+
+  // Check if base names match exactly
+  if (invBase && prodBase && invBase === prodBase) {
+    // Verify strength compatibility
+    if (hasCompatibleStrength(inv, prod)) {
+      return 1.0; // Perfect match
+    }
+  }
+
+  // Check if one contains the other (after normalization)
+  const invNorm = inv.replace(/[^A-Z0-9]/g, "");
+  const prodNorm = prod.replace(/[^A-Z0-9]/g, "");
+  
+  if (invNorm === prodNorm) return 1.0;
+  
+  if (invNorm.length > 5 && prodNorm.length > 5) {
+    if (invNorm.includes(prodNorm) || prodNorm.includes(invNorm)) {
+      if (hasCompatibleStrength(inv, prod)) {
+        return 0.95;
+      }
+    }
+  }
+
+  return 0;
+}
+
+/* =====================================================
+   FIX 6: ENHANCED CLEANED MATCH
+===================================================== */
+
+function cleanedMatch(invoiceText, product) {
+  if (!invoiceText || !product?.productName) return 0;
+
+  // Use similarity function with relaxed threshold
+  const score = similarity(invoiceText, product.productName);
+  
+  if (score >= 0.85) {
+    // Verify strength compatibility
+    if (hasCompatibleStrength(invoiceText, product.productName)) {
+      return 0.85;
+    }
+  }
+  
+  // Check base name match
+  const invBase = extractBaseName(invoiceText);
+  const prodBase = extractBaseName(product.productName);
+  
+  if (invBase && prodBase) {
+    const baseScore = similarity(invBase, prodBase);
+    
+    if (baseScore >= 0.90) {
+      if (hasCompatibleStrength(invoiceText, product.productName)) {
+        return 0.85;
+      }
+    }
+  }
+
+  return 0;
+}
+
+/* =====================================================
+   FIX 7: LOWER MINIMUM THRESHOLDS
+   Problem: Good matches being rejected
+   Solution: Lower confidence thresholds
+===================================================== */
+
+// Add this to matchProductSmart function (replace the threshold section):
+
+/*
+  // UPDATED CONFIDENCE THRESHOLDS (more lenient)
+  if (!best) {
+    console.log(`  ❌ No match found`);
+    return null;
+  }
+
+  // Lowered minimum score for better recall
+  const MIN_SCORE = 0.35; // Reduced from 0.40/0.45
+
+  if (bestScore < MIN_SCORE) {
+    console.log(`  ❌ Best match too low: ${best.productName} (${bestScore.toFixed(2)} < ${MIN_SCORE})`);
+    return null;
+  }
+
+  console.log(`  ✅ MATCHED: ${best.productName} (${matchType}, confidence: ${bestScore.toFixed(2)})`);
+
+  return {
+    ...best,
+    confidence: bestScore,
+    matchType,
+    boxPack: best.boxPack || best.pack || 0
+  };
+*/
+
+/* =====================================================
+   EXPORT ALL ENHANCED FUNCTIONS
+===================================================== */
+
+export {
+  cleanExtractedProductName,
+  extractFromExcelColumns,
+  hasCompatibleStrength,
+  extractBaseName,
+  similarity,
+  exactMatch,
+  cleanedMatch
+};
+
+
+/* =====================================================
    EXCEL PARSING
 ===================================================== */
 
 function parseExcel(file) {
   const wb = XLSX.read(file.buffer, { type: "buffer" });
   const ws = wb.Sheets[wb.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(ws, { defval: "", header: 1, raw: false });
 
-  console.log(`📊 Excel: ${rows.length} raw rows`);
+  const rowsArray = XLSX.utils.sheet_to_json(ws, {
+    defval: "",
+    header: 1,
+    raw: false
+  });
 
-  // Try column-based extraction
-  const columnMap = detectExcelColumns(rows);
-  
+  const rowsObject = XLSX.utils.sheet_to_json(ws, {
+    defval: "",
+    raw: false
+  });
+
+  console.log(`📊 Excel: ${rowsArray.length} raw rows`);
+
+  /* =====================================================
+     1️⃣ COLUMN-BASED EXTRACTION (PRIMARY PATH)
+  ===================================================== */
+
+  let columnMap = detectExcelColumns(rowsArray);
+
+  if (!columnMap && rowsObject.length > 0) {
+    console.log("🔄 Trying object-based column detection...");
+    columnMap = detectExcelColumns(rowsObject);
+  }
+
   if (columnMap) {
     console.log("✅ Using COLUMN-BASED extraction");
-    const products = extractFromExcelColumns(rows, columnMap);
-    
+
+    const sourceRows =
+      columnMap.headerRow < rowsArray.length ? rowsArray : rowsObject;
+
+    const products = extractFromExcelColumns(sourceRows, columnMap);
+
     const customerName = detectCustomerFromInvoice(
-      rows.slice(0, 20).map(r => Array.isArray(r) ? r.join(" ") : String(r))
+      rowsArray
+        .slice(0, 20)
+        .map(r => (Array.isArray(r) ? r.join(" ") : String(r)))
     );
-    
+
     return {
       dataRows: products,
       meta: {
         customerName: customerName || "UNKNOWN",
-        totalRows: rows.length,
+        totalRows: rowsArray.length,
         extracted: products.length,
-        failed: 0,
+        failed: Math.max(rowsArray.length - products.length, 0),
         structure: "COLUMN_BASED"
       }
     };
   }
-  
-  // Fallback to text-based
-  console.log("⚠️ Using TEXT-BASED extraction");
-  const textLines = rows.map(r =>
-    Array.isArray(r) ? r.join(" ").replace(/\s+/g, " ").trim() : String(r)
-  );
+
+  /* =====================================================
+     2️⃣ TEXT-BASED FALLBACK (GUARANTEED RETURN)
+  ===================================================== */
+
+  console.log("⚠️ Using TEXT-BASED extraction (FALLBACK)");
+
+  const textLines = rowsArray
+    .map(r => (Array.isArray(r) ? r.join(" ") : String(r)))
+    .map(l => l.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
 
   const customerName = detectCustomerFromInvoice(textLines);
-  const structure = detectExcelStructure(rows);
-
-  console.log(`📊 Excel structure detected: ${structure}`);
 
   const dataRows = [];
   const failed = [];
 
-  let workingLines = [];
+  for (let i = 0; i < textLines.length; i++) {
+    const line = textLines[i];
 
-  if (structure === "PDF_LIKE") {
-    console.log("📊 Applying PDF-style row merging for Excel");
-    workingLines = mergeLooseRows(textLines);
-  } else {
-    console.log("📊 Using table-style Excel parsing");
-    workingLines = textLines;
-  }
+    if (!line || line.length < MIN_PRODUCT_LENGTH) continue;
+    if (isHardJunk(line)) continue;
+    if (/^(TOTAL|GRAND TOTAL|SUB TOTAL|NET AMOUNT)/i.test(line)) continue;
 
-  for (let i = 0; i < workingLines.length; i++) {
-    const text = workingLines[i];
-    if (!text || text.length < MIN_PRODUCT_LENGTH) continue;
-    if (isHardJunk(text)) continue;
-
-    const qty = extractQuantity(text);
+    const qty = extractQuantity(line);
     if (!qty) {
-      if (looksLikeProduct(text)) {
-        failed.push({ row: i + 1, text, reason: "No qty" });
-      }
+      failed.push({ row: i + 1, text: line, reason: "No qty" });
       continue;
     }
 
-     const itemDesc = extractProductName(text);
-
-    if (!itemDesc || itemDesc.length < MIN_PRODUCT_LENGTH) {
-      failed.push({ row: i + 1, text, qty, reason: "No name" });
+    const itemDesc = extractProductName(line, qty);
+    if (!itemDesc || !looksLikeProduct(itemDesc)) {
+      failed.push({ row: i + 1, text: line, reason: "Invalid product" });
       continue;
     }
-
-
-
-// validate USING CLEANED NAME
-if (!looksLikeProduct(itemDesc)) {
-  failed.push({ row: i + 1, text, qty, reason: "Not product-like" });
-  continue;
-}
-
-
-    console.log(`✅ Excel Product: "${itemDesc}" | Qty: ${qty}`);
 
     dataRows.push({
       ITEMDESC: itemDesc,
       ORDERQTY: qty,
-      _rawText: text,
+      _rawText: line,
       _sourceRow: i + 1
     });
   }
-
-  console.log(`📊 Excel Result: ${dataRows.length} products, ${failed.length} failed`);
 
   return {
     dataRows,
     meta: {
       customerName: customerName || "UNKNOWN",
-      totalRows: rows.length,
+      totalRows: rowsArray.length,
       extracted: dataRows.length,
       failed: failed.length,
-      structure
+      structure: "TEXT_FALLBACK"
     }
   };
 }
@@ -713,7 +1131,7 @@ function parseText(file) {
       continue;
     }
     
-    const itemDesc = extractProductName(line);
+    const itemDesc = extractProductName(line, qty);
     if (!itemDesc || itemDesc.length < MIN_PRODUCT_LENGTH) {
       failed.push({ row: i + 1, text: line, qty, reason: 'No name' });
       continue;

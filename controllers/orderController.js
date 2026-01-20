@@ -189,18 +189,24 @@ export const extractOrderFields = async (req, res, next) => {
       // Match product
       const match = matchProductSmart(cleanedDesc, products);
 
-      if (!match) {
-        matchStats.failed++;
-        if (failedMatches.length < MAX_FAILED_MATCHES) {
-          failedMatches.push({
-            row: rowNum,
-            original: row.ITEMDESC,
-            cleaned: cleanedDesc,
-            reason: 'No matching product in database'
-          });
-        }
-        continue;
-      }
+   if (!match) {
+  matchStats.failed++;
+
+  validRows.push({
+    ITEMDESC: cleanedDesc,
+    ORDERQTY: qty,
+    matchedProduct: null,        // 👈 key change
+    matchFailed: true,
+    matchReason: "AUTO_MATCH_FAILED",
+    SAPCODE: "",
+    PACK: 0,
+    "BOX PACK": 0,
+    DVN: ""
+  });
+
+  continue;
+}
+
 
       // Success!
       matchStats.matched++;
@@ -217,7 +223,8 @@ export const extractOrderFields = async (req, res, next) => {
           productName: match.productName,
           cleanedProductName: match.cleanedProductName,
           baseName: match.baseName,
-          dosage: match.dosage,
+          dosage: match.dosage, 
+          strength: match.dosage, // ✅ Added ALIAS for frontend compatibility
           variant: match.variant,
           division: match.division,
           confidence: match.confidence,
@@ -411,7 +418,29 @@ export const convertOrders = async (req, res, next) => {
     const schemes = await SchemeMaster.find({ isActive: true }).lean();
     console.log(`✅ Loaded ${schemes.length} schemes\n`);
 
-    const sourceRows = upload.extractedData.dataRows;
+    // ✅ USE ROWS FROM REQUEST IF PROVIDED (Syncs frontend edits), OTHERWISE DB
+  
+    
+    // ✅ SOURCE ROWS (frontend edits take priority)
+let sourceRows = [];
+
+if (Array.isArray(req.body.dataRows) && req.body.dataRows.length > 0) {
+  sourceRows = req.body.dataRows;
+  console.log("🧠 Using rows from frontend (manual edits applied)");
+} else if (upload.extractedData?.dataRows) {
+  sourceRows = upload.extractedData.dataRows;
+  console.log("📦 Using rows from database snapshot");
+}
+
+// Hard safety
+if (!Array.isArray(sourceRows) || sourceRows.length === 0) {
+  return res.status(400).json({
+    success: false,
+    message: "No rows available for conversion"
+  });
+}
+
+
     const output = [];
     const errors = [];
     const schemeRows = [];
@@ -420,30 +449,50 @@ export const convertOrders = async (req, res, next) => {
     console.log(`⏳ Processing ${sourceRows.length} rows...\n`);
 
     for (let i = 0; i < sourceRows.length; i++) {
-      const row = sourceRows[i];
-      const rowNum = i + 1;
+  const row = sourceRows[i];   // ✅ row is NOW defined
+  const rowNum = i + 1;
 
-      const qty = Number(row.ORDERQTY);
-      if (isNaN(qty) || qty <= 0) {
-        errors.push({
-          rowNumber: rowNum,
-          field: "ORDERQTY",
-          error: "Invalid quantity",
-          value: row.ORDERQTY
-        });
-        continue;
-      }
+  const qty = Number(row.ORDERQTY);
+  if (isNaN(qty) || qty <= 0) {
+    errors.push({
+      rowNumber: rowNum,
+      field: "ORDERQTY",
+      error: "Invalid quantity",
+      value: row.ORDERQTY
+    });
+    continue;
+  }
 
-      const boxPack = row["BOX PACK"] || 0;
+  // ✅ CORRECT product code resolution
+  const productCode =
+    row.manualProduct?.productCode ||
+    row.SAPCODE ||
+    row.matchedProduct?.productCode;
+
+  if (!productCode) {
+    errors.push({
+      rowNumber: rowNum,
+      field: "SAPCODE",
+      error: "Missing product code"
+    });
+    continue;
+  }
+    const boxPack =
+  row["BOX PACK"] ||
+  row.boxPack ||
+  row.matchedProduct?.boxPack ||
+  0;
+
       const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
 
       const schemeResult = applyScheme({
-        productCode: row.SAPCODE,
-        orderQty: qty,
-        itemDesc: row.ITEMDESC,
-        division: row.DVN,
-        schemes
-      });
+  productCode,               // ✅ correct
+  orderQty: qty,
+  itemDesc: row.ITEMDESC,
+  division: row.DVN,
+  schemes
+});
+
 
       if (schemeResult.schemeApplied) {
         schemeRows.push({
@@ -458,16 +507,17 @@ export const convertOrders = async (req, res, next) => {
       }
 
       output.push({
-        CODE: customer.customerCode,
-        "CUSTOMER NAME": customer.customerName,
-        SAPCODE: row.SAPCODE || "",
-        ITEMDESC: row.ITEMDESC,
-        ORDERQTY: qty,
-        "BOX PACK": boxPack,
-        PACK: pack,
-        DVN: row.DVN || "",
-        _hasScheme: schemeResult.schemeApplied || false
-      });
+  CODE: customer.customerCode,
+  "CUSTOMER NAME": customer.customerName,
+  SAPCODE: productCode,       // ✅ correct
+  ITEMDESC: row.ITEMDESC,
+  ORDERQTY: qty,
+  "BOX PACK": boxPack,
+  PACK: pack,
+  DVN: row.DVN || "",
+  _hasScheme: schemeResult.schemeApplied || false
+});
+
     }
 
     console.log(`\n📊 Conversion complete:`);
@@ -525,6 +575,20 @@ export const convertOrders = async (req, res, next) => {
     ];
 
     XLSX.utils.book_append_sheet(wb, ws, "Order Training");
+
+    // 2️⃣ Scheme summary sheet
+const schemeSheetData = schemeRows.map(s => ({
+
+  "Product Code": s.productCode,
+  "Product Name": s.productName,
+  "Order Qty": s.orderQty,
+  "Free Qty": s.freeQty,
+  "Scheme %": s.schemePercent,
+  "Division": s.division
+}));
+
+const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
     XLSX.writeFile(wb, filePath);
 
     // Update database
@@ -539,6 +603,9 @@ export const convertOrders = async (req, res, next) => {
     upload.customerName = customer.customerName;
     upload.schemeSummary = { count: schemeRows.length, totalFreeQty };
     upload.schemeDetails = schemeRows;
+
+   
+
 
     await upload.save();
 
@@ -576,7 +643,15 @@ export const getOrderById = async (req, res, next) => {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
 
-    const schemeDetails = upload.schemeDetails || [];
+   const schemeDetails = (upload.schemeDetails || []).map(s => ({
+  productCode: s.productCode,
+  productName: s.productName,
+  orderQty: s.orderQty,
+  freeQty: s.freeQty,
+  schemePercent: s.schemePercent,
+  division: s.division
+}));
+
     const schemeSummary = {
       count: schemeDetails.length,
       totalFreeQty: schemeDetails.reduce((sum, s) => sum + (s.freeQty || 0), 0)
@@ -629,9 +704,54 @@ export const getOrderHistory = async (req, res) => {
   }
 };
 
+/* =====================================================
+   CHECK SCHEMES (Upsell)
+===================================================== */
+export const checkSchemes = async (req, res, next) => {
+  try {
+    const { dataRows } = req.body;
+    if (!dataRows || !Array.isArray(dataRows)) {
+      return res.json({ success: true, suggestions: [] });
+    }
+
+    const schemes = await SchemeMaster.find({ isActive: true }).lean();
+    const suggestions = [];
+
+    // Import this dynamically or assume it's imported at top
+    const { findUpsellOpportunity } = await import("../services/schemeMatcher.js");
+
+    for (let i = 0; i < dataRows.length; i++) {
+        const row = dataRows[i];
+        const qty = Number(row.ORDERQTY);
+        const productCode = row.SAPCODE || row.matchedProduct?.productCode;
+
+        if (!qty || !productCode) continue;
+
+        const suggestion = findUpsellOpportunity({
+            productCode,
+            orderQty: qty,
+            schemes
+        });
+
+        if (suggestion) {
+            suggestions.push({
+                rowIndex: i,
+                itemDesc: row.ITEMDESC,
+                ...suggestion
+            });
+        }
+    }
+
+    res.json({ success: true, suggestions });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export default {
   extractOrderFields,
   convertOrders,
   getOrderById,
-  getOrderHistory
+  getOrderHistory,
+  checkSchemes
 };

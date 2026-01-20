@@ -17,45 +17,38 @@ import OrderUpload from "../../models/orderUpload.js";
 /* =====================================================
    ADMIN GUARD (use middleware if already exists)
 ===================================================== */
-function ensureAdmin(req, res) {
-  if (req.user?.role !== "admin") {
-    res.status(403).json({ success: false, message: "Admin access required" });
-    return false;
-  }
-  return true;
-}
-
 /* =====================================================
    GET ALL USERS
    GET /api/admin/users
 ===================================================== */
 export const getUsers = async (req, res, next) => {
   try {
-    if (!ensureAdmin(req, res)) return;
-
     const search = (req.query.search || "").trim();
     const safeSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-    const users = await User.find(
-      search
-        ? {
-            $or: [
-              { name: { $regex: safeSearch, $options: "i" } },
-              { email: { $regex: safeSearch, $options: "i" } }
-            ]
-          }
-        : {}
-    )
-      .select("-password")
-      .sort({ createdAt: -1 })
-      .lean();
+    // Run DB queries in parallel for performance
+    const [users, conversions] = await Promise.all([
+      User.find(
+        search
+          ? {
+              $or: [
+                { name: { $regex: safeSearch, $options: "i" } },
+                { email: { $regex: safeSearch, $options: "i" } }
+              ]
+            }
+          : {}
+      )
+        .select("-password")
+        .sort({ createdAt: -1 })
+        .lean(),
 
-    /* ---------- Conversion counts (READ ONLY) ---------- */
-    const conversions = await OrderUpload.aggregate([
-      { $match: { status: "CONVERTED" } },
-      { $group: { _id: "$userId", count: { $sum: 1 } } }
+      OrderUpload.aggregate([
+        { $match: { status: "CONVERTED" } },
+        { $group: { _id: "$userId", count: { $sum: 1 } } }
+      ])
     ]);
 
+    /* ---------- Map conversions for O(1) lookup ---------- */
     const conversionMap = Object.fromEntries(
       conversions.map(c => [String(c._id), c.count])
     );
@@ -84,7 +77,7 @@ export const getUsers = async (req, res, next) => {
 ===================================================== */
 export const addUser = async (req, res, next) => {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const { name, email, role = "user", status = "Active", password } = req.body;
 
@@ -145,7 +138,7 @@ export const addUser = async (req, res, next) => {
 ===================================================== */
 export const updateRole = async (req, res, next) => {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const { role } = req.body;
     if (!role) {
@@ -181,7 +174,7 @@ export const updateRole = async (req, res, next) => {
 ===================================================== */
 export const toggleStatus = async (req, res, next) => {
   try {
-    if (!ensureAdmin(req, res)) return;
+    // Admin guard handled by middleware
 
     const user = await User.findById(req.params.id);
     if (!user) {
