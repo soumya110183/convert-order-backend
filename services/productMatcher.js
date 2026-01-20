@@ -11,6 +11,7 @@
 
 import { extractStrength, normalize } from "../utils/extractionUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
+import { normalizeProductName, normalizeForFuzzyMatch } from "../utils/productNormalizer.js";
 
 
 function formAwareMatch(invoiceText, productName) {
@@ -53,9 +54,30 @@ function extractBrandRoot(text = "") {
 function isComboStrength(text = "") {
   return /\d+\s*\/\s*\d+/.test(text);
 }
+function normalizeForMatch(text = "") {
+  return text
+    .toUpperCase()
+    // distributor noise
+    .replace(/\b(MICR|MICRO|RAJ|DIST)\b/g, " ")
+    // normalize strength combos
+    .replace(/(\d+)\s*MG\s*\/\s*(\d+)\s*MG/g, "$1/$2")
+    .replace(/(\d+)\s*MG/g, "$1")
+    // normalize forms
+    .replace(/\bTABLETS?\b/g, "TAB")
+    .replace(/\bTABS?\b/g, "TAB")
+    .replace(/\bCAPSULES?\b/g, "CAP")
+    .replace(/\bCAPS?\b/g, "CAP")
+    // remove pack
+    .replace(/\(\s*\d+\s*['"`]?\s*S\s*\)/g, " ")
+    .replace(/\b\d+\s*['"`]?\s*S\b/g, " ")
+    .replace(/\s*-\s*/g, "-")
 
-function extractCombo(text = "") {
-  const m = text.match(/(\d+)\s*\/\s*(\d+)/);
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeCombo(text = "") {
+  const m = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
   return m ? `${m[1]}/${m[2]}` : null;
 }
 
@@ -108,12 +130,12 @@ function cleanInvoiceProduct(text) {
 function normalizeStrength(strength = "") {
   if (!strength) return "";
 
-  return String(strength)
+  return strength
     .toUpperCase()
     .replace(/\s+/g, "")
-    // normalize units inside combo
-    .replace(/MG|ML|MCG/g, "")
-    // normalize separators
+    // Normalize combo units safely
+    .replace(/(\d+(?:\.\d+)?)MG/g, "$1")
+    .replace(/(\d+(?:\.\d+)?)ML/g, "$1")
     .replace(/\/+/g, "/")
     .trim();
 }
@@ -122,71 +144,47 @@ function normalizeStrength(strength = "") {
 /* =====================================================
    FIX 3: RELAXED COMPATIBILITY CHECKS
 ===================================================== */
-
 function hasCompatibleStrength(invoiceText, productName) {
-  const invCombo = extractCombo(invoiceText);
-  const prodCombo = extractCombo(productName);
+  const inv = normalizeStrength(extractStrength(invoiceText));
+  const prod = normalizeStrength(extractStrength(productName));
 
-  // 🚨 HARD BLOCK: combo vs non-combo
-  if (invCombo && !prodCombo) return false;
-  if (!invCombo && prodCombo) return false;
+  if (!inv && !prod) return true;
+  if (inv && prod) return inv === prod;
 
-  // 🚨 HARD BLOCK: combo mismatch
-  if (invCombo && prodCombo && invCombo !== prodCombo) return false;
-
-  // fallback to single-strength logic
-  const invStrength = normalizeStrength(extractStrength(invoiceText));
-  const prodStrength = normalizeStrength(extractStrength(productName));
-
-  if (!invStrength && !prodStrength) return true;
-  if (invStrength && prodStrength) return invStrength === prodStrength;
-
+  // ✅ allow when one side misses strength
   return true;
 }
+
+
+
+
+
+
 
 
 function hasCompatibleVariant(invoiceText, productName) {
-  // Extract variant keywords (OD, SR, FORTE, etc.)
-  const extractVariantKeywords = (text) => {
-    const variants = [];
-    const upper = text.toUpperCase();
-    
-   const variantPatterns = [
-  // Release / dosage
-  'OD','SR','MR','XL','CR',
+  const extract = (text) =>
+    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB)\b/g) || [];
 
-  // Combinations
-  'FORTE','PLUS','GOLD','CV','LV','HV','TRIO','BETA','MD',
+  const inv = extract(invoiceText);
+  const prod = extract(productName);
 
-  // Antibiotic / probiotic / nasal
-  'LB','LBX','NS','DS','DT','PAED','KID',
+  // STRICT variants must match
+  const strict = ['OD','SR','MR','XL','CR'];
 
-  // Dermatology / ENT
-  'CREAM','GEL','OINT','SPRAY','DROPS'
-];
-   
-    
-    for (const v of variantPatterns) {
-    if (new RegExp(`(^|[\\s\\-])${v}($|[\\s\\-])`).test(upper)) {
+  const invStrict = inv.filter(v => strict.includes(v));
+  const prodStrict = prod.filter(v => strict.includes(v));
 
-        variants.push(v);
-      }
+  if (invStrict.length && prodStrict.length) {
+    if (!invStrict.some(v => prodStrict.includes(v))) {
+      return false; // real mismatch
     }
-    
-    return variants;
-  };
-
-  const invVariants = extractVariantKeywords(invoiceText);
-  const prodVariants = extractVariantKeywords(productName);
-
-  // If both have variants, they must match
-  if (invVariants.length > 0 && prodVariants.length > 0) {
-    return invVariants.some(v => prodVariants.includes(v));
   }
 
-  // If one has variant and other doesn't → ALLOW
+  // SOFT variants → do NOT block
   return true;
 }
+
 
 /* =====================================================
    FIX 4: ENHANCED EXACT MATCH
@@ -289,15 +287,19 @@ function cleanedMatch(invoiceText, product) {
 function baseStrengthMatch(parts, product) {
   if (!parts || !product?.productName) return 0;
 
-  const extractBase = (text) => {
-    return text
-      .replace(/\d+(?:\.\d+)?\/\d+(?:\.\d+)?\s*(?:MG|ML)?/g, " ")
-      .replace(/\d+(?:\.\d+)?\s*(?:MG|ML|MCG)/g, " ")
-      .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?)\b/gi, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .toUpperCase();
-  };
+const extractBase = (text = "") => {
+  return text
+    .toUpperCase()
+    // remove strength (numbers only)
+    .replace(/\b\d+(\.\d+)?(MG|ML|MCG)?\b/g, " ")
+    // remove form words
+    .replace(/\b(TAB|TABS|TABLET|TABLETS|CAP|CAPS|CAPSULES?)\b/g, " ")
+    // normalize hyphens
+    .replace(/\s*-\s*/g, "-")
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
 
   const invBase = extractBase(parts.name || "");
   const prodBase = extractBase(product.productName);
@@ -339,8 +341,13 @@ function fuzzyMatch(invoiceText, productName) {
 export function matchProductSmart(invoiceDesc, products) {
   if (!invoiceDesc || !products?.length) return null;
 
-  const rawInvoice = invoiceDesc;
-  const cleaned = cleanInvoiceProduct(cleanInvoiceDesc(invoiceDesc));
+const rawInvoice = invoiceDesc;
+
+// 🔥 ENHANCED: Use productNormalizer for better normalization
+const cleaned = normalizeProductName(
+  cleanInvoiceProduct(cleanInvoiceDesc(invoiceDesc))
+);
+
 
   let best = null;
   let bestScore = 0;
@@ -352,24 +359,36 @@ export function matchProductSmart(invoiceDesc, products) {
   let score = 0;
   let type = "";
 
+  const prodNorm = normalizeProductName(p.productName);
   const invBrand = extractBrandRoot(rawInvoice);
   const prodBrand = extractBrandRoot(p.productName);
 
   // 🚨 HARD BRAND BLOCK (THIS FIXES YOUR BUG)
-if (invBrand && prodBrand && invBrand !== prodBrand) {
-  // allow fuzzy + form-aware to try
-  // only block exact/base matches
-  if (!cleaned.includes(prodBrand)) continue;
+// 🚨 Brand block ONLY for distributor noise
+const NOISE_BRANDS = ["MICRO", "RAJ", "DIST"];
+
+if (
+  invBrand &&
+  prodBrand &&
+  invBrand !== prodBrand &&
+  NOISE_BRANDS.includes(invBrand)
+) {
+  continue;
 }
 
 
+
   // 🔒 Existing strength block (keep this)
-  if (!hasCompatibleStrength(rawInvoice, p.productName)) {
-    continue;
-  }
+const strengthOk = hasCompatibleStrength(rawInvoice, p.productName);
+if (!strengthOk) {
+  // 🚨 ABSOLUTE BLOCK: do not allow fuzzy/contains
+  continue;
+}
+
 
   // 🔒 Existing variant block
-  if (!hasCompatibleVariant(rawInvoice, p.productName)) {
+ if (!hasCompatibleVariant(rawInvoice, p.productName)) {
+
     continue;
   }
 
@@ -385,8 +404,10 @@ if (invBrand && prodBrand && invBrand !== prodBrand) {
 
   // Strategy 3: Base + Strength
   if (!score) {
-    const parts = splitProduct(cleaned);
-    score = baseStrengthMatch(parts, p);
+   const parts = splitProduct(cleaned);
+score = baseStrengthMatch(parts, p);
+
+
     if (score) type = "BASE_STRENGTH";
   }
   if (!score) {
@@ -394,23 +415,24 @@ if (invBrand && prodBrand && invBrand !== prodBrand) {
     if (score) type = "FORM_AWARE";
   }
 
-  // Strategy 4: Fuzzy
-  if (!score) {
-    score = fuzzyMatch(cleaned, p.productName);
-    if (score) type = "FUZZY";
-  }
+
 
     // Strategy 5: Contains
     if (!score) {
-      const inv = cleaned.replace(/[^A-Z0-9]/g, "");
-      const prod = p.productName.replace(/[^A-Z0-9]/g, "");
+  const inv = cleaned.replace(/[^A-Z0-9]/g, "");
+const prod = prodNorm.replace(/[^A-Z0-9]/g, "");
+
+if (
+  inv.length > 6 &&
+  prod.length > 6 &&
+  (inv.includes(prod) || prod.includes(inv)) &&
+  hasCompatibleStrength(rawInvoice, p.productName)
+) {
+  score = 0.55;
+  type = "CONTAINS";
+}
+
       
-      if (inv.length > 5 && prod.length > 5) {
-        if (inv.includes(prod) || prod.includes(inv)) {
-          score = 0.55;
-          type = "CONTAINS";
-        }
-      }
     }
 
     if (score > bestScore) {
@@ -551,7 +573,7 @@ export function matchByReverseLookup(rawLine, products) {
 
         // 🚨 CRITICAL SAFETY CHECK 2: Variant must be compatible
         // (If RawLine has "SR" and Product is "OD", reject)
-        if (!hasCompatibleVariant(rawInvoice, p.productName)) {
+        if (!hasCompatibleVariant(rawLine, p.productName)) {
             continue;
         }
         

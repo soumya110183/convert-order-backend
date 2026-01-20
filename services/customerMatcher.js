@@ -11,8 +11,11 @@
 function normalize(text = "") {
   return text
     .toUpperCase()
-    .replace(/[^A-Z0-9 ]/g, " ")
-    .replace(/\b(PVT|LTD|LIMITED|PHARMA|PHARMACY|MEDICAL|DRUGS?)\b/g, "")
+    .toUpperCase()
+    .replace(/\./g, "") // 🔥 Fix: Remove dots (S.R.I -> SRI)
+    .replace(/['"]/g, "") // Remove quotes
+    .replace(/[^A-Z0-9 ]/g, " ") // Replace other symbols with space
+    .replace(/\b(PVT|LTD|LIMITED|PHARMA|PHARMACY|MEDICAL|DRUGS?|AGENCIES|TRADERS?|ENTERPRISES?|DISTRIBUTORS?|STORES?)\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }

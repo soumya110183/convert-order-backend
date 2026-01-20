@@ -66,6 +66,8 @@ export function splitProduct(raw = "") {
     .replace(/\s+/g, " ")
     .replace(/\s*-\s*/g, "-") // Normalize hyphens
     .trim();
+// 🔥 FIX: remove dangling hyphens
+text = text.replace(/-+$/g, "").replace(/^-+/g, "");
 
   return {
     name,

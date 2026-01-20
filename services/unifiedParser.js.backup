@@ -118,7 +118,7 @@ function looksLikeProduct(text, strict = true) {
   if (/^[0-9A-Z]{10,15}$/.test(upper.replace(/\s/g, ""))) return false;
 
   // ✅ MUST contain medicine identity
-  const hasForm = /\b(TAB|TABLET|CAP|CAPSULE|CAPS|INJ|SYRUP|SYP|DROPS|CREAM|GEL|OINT|VIAL|AMP)\b/i.test(upper);
+  const hasForm = /\b(TAB|TABLET|CAP|CAPSULE|INJ|SYRUP|SYP|DROPS|CREAM|GEL|OINT)\b/i.test(upper);
   const hasStrength = /\b\d+\s*(MG|ML|MCG|IU|GM)\b/i.test(upper);
   const hasPack = /\d+['"`]S\b/i.test(upper);
 
@@ -198,12 +198,6 @@ function looksLikeProductRelaxed(text) {
 function extractQuantityFromQtyLine(text) {
   if (!text) return null;
 
-  // ❌ Skip if line contains product name text (letters)
-  // Allow "10'S" or "TAB" if it's minimal, but not "DIANORM-OD"
-  // Heuristic: If > 3 consecutive letters, skip (unless it's just one word like "TAB"?)
-  // Better: If it contains long words.
-  if (/[A-Z]{4,}/i.test(text)) return null; 
-
   const tokens = text.trim().split(/\s+/);
 
   // Find decimal amount position
@@ -219,12 +213,6 @@ function extractQuantityFromQtyLine(text) {
 
     const val = Number(token);
 
-
-    //  CRITICAL: BLOCK SAP CODES (1000-9999) in fallback too
-    if (val >= 1000 && val <= 9999) {
-      console.log(`  [FALLBACK BLOCKED] SAP code: ${val}`);
-      continue;
-    }
     // Guardrails
     if (val >= 1 && val <= 5000) {
       debug(`  [QTY_COL] Found qty: ${val}`);
@@ -270,12 +258,6 @@ function extractQuantityOriginal(text) {
     if (!/^\d+$/.test(token)) continue;
     
     const val = Number(token);
-
-    //  CRITICAL: BLOCK SAP CODES (1000-9999) in fallback too
-    if (val >= 1000 && val <= 9999) {
-      console.log(`  [FALLBACK BLOCKED] SAP code: ${val}`);
-      continue;
-    }
     
     if (/^(MG|ML|MCG|GM|G|IU|KG)$/i.test(next)) continue;
     if (isPackToken(token)) continue;
@@ -300,84 +282,6 @@ function extractQuantityOriginal(text) {
   });
   
   return candidates[0].value;
-}
-
-// 🔥 RAW ROW LOOKAHEAD (SRI SABARI FIX)
-function extractQuantityFromAdjacentRows(productLine, rawRows) {
-  if (!rawRows || rawRows.length === 0) return null;
-  
-  // Find index of this product line in rawRows
-  // Since mergedLines might differ slightly, use fuzzy check
-  const cleanLine = productLine.replace(/[\s\t]+/g, '').toUpperCase();
-  
-  let bestIdx = -1;
-  let maxScore = 0;
-
-  // Search window: Scan whole rawRows? Efficient enough for small PDFs
-  for (let i = 0; i < rawRows.length; i++) {
-    const rawClean = rawRows[i].replace(/[\s\t]+/g, '').toUpperCase();
-    if (rawClean.includes(cleanLine) || cleanLine.includes(rawClean)) {
-       // Check overlap
-       if (rawClean.length > 5 && cleanLine.length > 5) {
-           bestIdx = i;
-           break; // Assume first match is correct (sequential processing assumed)
-       }
-    }
-  }
-
-  if (bestIdx === -1) return null;
-
-  // Check next 3 rows
-  for (let offset = 1; offset <= 3; offset++) {
-    const checkIdx = bestIdx + offset;
-    if (checkIdx >= rawRows.length) break;
-
-    const rowText = rawRows[checkIdx].trim();
-    if (!rowText) continue;
-
-    // Strict requirements for standalone qty row:
-    // 1. Must contain a valid number
-    // 2. Must NOT contain letters (except maybe 'X' for pack or 'NOS') or be very short
-    
-    // 🔥 Support 100+20 pattern (bonus qty)
-    const additionMatch = rowText.match(/^(\d+)\+(\d+)$/);
-    if (additionMatch) {
-        const sum = Number(additionMatch[1]) + Number(additionMatch[2]);
-        if (sum >= 1 && sum < MAX_QTY) return sum;
-    }
-
-    const isNumberOnly = /^\d+$/.test(rowText);
-    const isNumberWithDecimals = /^\d+(\.\d+)?$/.test(rowText); // e.g. "30" or "30.00"
-    
-    if (isNumberWithDecimals) {
-        const val = Number(rowText);
-        // Valid qty range (avoid picking up prices like 2314.20)
-        // Prices are usually formatted with .00, but logic:
-        // Pack: 1X10
-        // Price: 2314.20
-        // Qty: 30
-        
-        // Filter out typical prices? 
-        // Heuristic: If it has 2 decimal places, it MIGHT be a price.
-        // But 30.00 is qty?
-        // Let's rely on range. Prices > 1000 usually.
-        // SAP codes (1000-9999) blocked.
-        // So valid range: 1-999 OR 10000+ (for huge orders?)
-        // Wait, 2314.20 is a price. '30' is qty.
-        // 2314.20 matches `isNumberWithDecimals`.
-        // val = 2314.2
-        // BLOCK: 1000 <= 2314 <= 9999. BLOCKED.
-        
-        if (val >= 1 && val < 999999) {
-             // Block SAP Range/Likely Prices
-             if (val >= 1000 && val <= 9999) continue;
-             
-             return Math.floor(val); 
-        }
-    }
-  }
-  
-  return null;
 }
 /**
  * Strategy A: Extract quantity from FULL merged product line
@@ -429,7 +333,7 @@ function extractQuantityFromMergedLine(text) {
     if (/X$/i.test(prev)) continue;
 
     // 🚫 BLOCK strength patterns (500MG, 20ML, etc.)
-    if (/^(MG|ML|MCG|GM|G|IU|KG|TAB|CAP|TABS|CAPS|INJ|SYP)$/i.test(next)) continue;
+    if (/^(MG|ML|MCG|GM|G|IU|KG)$/i.test(next)) continue;
     
     // ❌ PRODUCTION FIX: BLOCK ALL SAP CODES (1000-9999)
     if (val >= 1000 && val <= 9999) {
@@ -441,13 +345,6 @@ function extractQuantityFromMergedLine(text) {
     if (i === 0 && val < 100) {
       console.log(`  [BLOCKED] Serial number: ${val}`);
       continue;
-    }
-
-    // 🚫 BLOCK likely product codes (followed by long text)
-    // e.g. "402 MICRODOX" -> 402 is code
-    if (next && /[A-Z\-]{4,}/i.test(next)) {
-       console.log(`  [BLOCKED] Code followed by text: ${val} -> ${next}`);
-       continue;
     }
 
     // ✅ Valid quantity: 1-999 or 10000+
@@ -675,9 +572,6 @@ function mergePDFRows(rows) {
 async function parsePDF(file) {
   const { rows } = await extractTextFromPDFAdvanced(file.buffer);
 
-  // Store raw rows for adjacent row quantity detection
-  const rawRows = rows.map(r => r.rawText);
-
   debug(`\n📄 PDF: ${rows.length} raw rows`);
   
   // 🔥 DEBUG: Show raw rows where products should be
@@ -722,7 +616,6 @@ async function parsePDF(file) {
     }
 
     if (!looksLikeProduct(text, true)) {
-      console.log(`  ❌ Row ${i + 1}: Skipped (No form/keyword) "${text.substring(0, 30)}..."`);
       failed.push({ row: i + 1, text, reason: "No product form keyword" });
       continue;
     }
@@ -736,12 +629,6 @@ async function parsePDF(file) {
       if (looksLikeQtyPriceLine(next)) {
         qty = extractQuantity(next);
       }
-    }
-
-    // 🔥 STRATEGY 3: Adjacent Row Lookahead (SRI SABARI Fix)
-    if (!qty && extractQuantityFromAdjacentRows) {
-      qty = extractQuantityFromAdjacentRows(text, rawRows);
-      if (qty) debug(`  🎯 Strategy 3 (Adjacent): Found Qty ${qty}`);
     }
 
     // ✅ DO NOT DROP PRODUCT IF QTY IS MISSING
@@ -1501,13 +1388,11 @@ function parseText(file) {
     
     const itemDesc = extractProductName(line, qty);
     if (!itemDesc || itemDesc.length < MIN_PRODUCT_LENGTH) {
-      console.log(`  ❌ Row ${i + 1}: Failed extraction (No name) from "${line}"`);
       failed.push({ row: i + 1, text: line, qty, reason: 'No name' });
       continue;
     }
     
     if (!looksLikeProduct(itemDesc)) {
-      console.log(`  ❌ Row ${i + 1}: Failed extraction (Not product-like) "${itemDesc}"`);
       failed.push({ row: i + 1, text: line, qty, reason: 'Not product-like' });
       continue;
     }
@@ -1574,5 +1459,3 @@ export async function unifiedExtract(file) {
 }
 
 export default { unifiedExtract };
-
-

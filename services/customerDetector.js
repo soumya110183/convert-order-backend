@@ -168,11 +168,12 @@ export function detectCustomerFromInvoice(rows = []) {
  */
 function cleanCustomerName(text) {
   if (!text) return '';
+  console.log(`[CustomerClean] Input: "${text}"`);
   
   let cleaned = text
     .trim()
     // Remove leading prefixes
-    .replace(/^(?:M\/S|TO|CUSTOMER|CLIENT|BILL\s+TO|SHIP\s+TO|SOLD\s+TO)[:\s]+/i, '')
+    .replace(/^(?:M\/S|M\s+|M\.\s*|MS\s+|TO|CUSTOMER|CLIENT|BILL\s+TO|SHIP\s+TO|SOLD\s+TO)[:\s]*/i, '')
     // Remove customer code if present
     .replace(/^[A-Z0-9]+\s*[-–]\s*/i, '')
     // Remove trailing punctuation
@@ -183,6 +184,7 @@ function cleanCustomerName(text) {
     .replace(/\s*\(\s*BRANCH\s*\)/gi, '')
     // Remove extra whitespace
     .replace(/\s+/g, ' ')
+    .replace(/\./g, '') // 🔥 Fix: Remove dots early
     .trim();
   
   // Title case conversion
@@ -202,6 +204,7 @@ function cleanCustomerName(text) {
     })
     .join(' ');
   
+  console.log(`[CustomerClean] Output: "${cleaned}"`);
   return cleaned;
 }
 

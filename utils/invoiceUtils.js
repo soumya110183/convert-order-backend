@@ -57,6 +57,30 @@ export function stripLeadingCodes(text = "") {
  * Clean invoice description for matching
  * PRESERVES: Name, strength, dosage, variants, forms
  */
+
+function normalizeForMatch(text = "") {
+  return text
+    .toUpperCase()
+    // distributor noise
+    .replace(/\b(MICR|MICRO|RAJ|DIST)\b/g, " ")
+    // normalize strength
+    .replace(/(\d+)\s*MG\s*\/\s*(\d+)\s*MG/g, "$1/$2")
+    .replace(/(\d+)\s*MG/g, "$1")
+    // normalize forms
+    .replace(/\bTABLETS?\b/g, "TAB")
+    .replace(/\bTABS?\b/g, "TAB")
+    .replace(/\bCAPSULES?\b/g, "CAP")
+    .replace(/\bCAPS?\b/g, "CAP")
+    // remove pack
+    .replace(/\(\s*\d+\s*['"`]?\s*S\s*\)/g, " ")
+    .replace(/\b\d+\s*['"`]?\s*S\b/g, " ")
+    // normalize symbols
+    .replace(/[-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+
 export function cleanInvoiceDesc(text = "") {
   if (!text) return "";
 
