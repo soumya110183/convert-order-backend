@@ -178,11 +178,13 @@ function hasCompatibleStrength(invoiceText, productName) {
   const inv = normalizeStrength(extractStrength(invoiceText));
   const prod = normalizeStrength(extractStrength(productName));
 
-  if (!inv && !prod) return true;
-  if (inv && prod) return inv === prod;
+  // 🔥 STRICT: Both must have strength and match, OR both must be absent
+  if (!inv && !prod) return true; // Both absent = OK
+  if (inv && prod) return inv === prod; // Both present = Must match
 
-  // ✅ allow when one side misses strength
-  return true;
+  // ❌ One has strength, other doesn't = NOT compatible
+  // This prevents "MECONERV 500" from matching "MECONERV" automatically
+  return false;
 }
 
 
@@ -476,7 +478,39 @@ if (
   }
 
   if (!best) {
-    console.log(`  ❌ No match found`);
+    console.log(`  ❌ No match found, searching for candidates...`);
+    
+    // 🔥 NEW: Find similar products by base name
+    const parts = splitProduct(cleaned);
+    const baseName = parts.name?.toUpperCase();
+    
+    if (baseName && baseName.length >= 3) {
+      const candidates = products.filter(p => {
+        const pParts = splitProduct(p.productName);
+        const pBase = pParts.name?.toUpperCase();
+        
+        // Match if base names are similar
+        return pBase && (
+          pBase.includes(baseName) || 
+          baseName.includes(pBase) ||
+          pBase === baseName
+        );
+      }).slice(0, 10); // Limit to 10 candidates
+      
+      if (candidates.length > 0) {
+        console.log(`  💡 Found ${candidates.length} candidates with base "${baseName}"`);
+        // Return null for matchedProduct, but include candidates for manual selection
+        return {
+          matchedProduct: null,
+          candidates: candidates.map(c => ({
+            ...c,
+            boxPack: c.boxPack || c.pack || 0
+          })),
+          reason: `No exact match for "${invoiceDesc}". Please select from similar products.`
+        };
+      }
+    }
+    
     return null;
   }
 
@@ -485,7 +519,13 @@ if (
 
   if (bestScore < MIN_SCORE) {
     console.log(`  ❌ Best match too low: ${best.productName} (${bestScore.toFixed(2)} < ${MIN_SCORE})`);
-    return null;
+    
+    // 🔥 NEW: Return as candidate instead of failing completely
+    return {
+      matchedProduct: null,
+      candidates: [{ ...best, boxPack: best.boxPack || best.pack || 0 }],
+      reason: `Low confidence match (${(bestScore * 100).toFixed(0)}%). Please confirm.`
+    };
   }
 
   console.log(`  ✅ MATCHED: ${best.productName} (${matchType}, confidence: ${bestScore.toFixed(2)})`);

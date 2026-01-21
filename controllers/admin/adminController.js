@@ -8,6 +8,7 @@ import ProductMaster from "../../models/productMaster.js";
 import SchemeMaster from "../../models/schemeMaster.js";
 import InvoiceAudit from "../../models/invoiceAudit.js";
 import User from "../../models/User.js";
+import OrderUpload from "../../models/OrderUpload.js"; // Match user dashboard model
 
 /**
  * =====================================================
@@ -195,6 +196,7 @@ export async function getAdminDashboard(req, res, next) {
   try {
     // Admin guard handled by middleware
 
+
     const [
       customerCount,
       productCount,
@@ -208,9 +210,9 @@ export async function getAdminDashboard(req, res, next) {
       ProductMaster.countDocuments(),
       SchemeMaster.countDocuments(),
       User.countDocuments(),
-      InvoiceAudit.countDocuments(),
-      InvoiceAudit.countDocuments({ status: "COMPLETED" }),
-      InvoiceAudit.countDocuments({ status: "FAILED" })
+      OrderUpload.countDocuments(),
+      OrderUpload.countDocuments({ status: "CONVERTED" }), // Matches OrderUpload status
+      OrderUpload.countDocuments({ status: "FAILED" })
     ]);
 
     const successRate =
@@ -273,6 +275,100 @@ export async function searchMasterData(req, res, next) {
 }
 
 /* =====================================================
+   RECENT UPLOADS (PAGINATED)
+   GET /api/admin/uploads
+===================================================== */
+export async function getRecentUploadsPaginated(req, res, next) {
+  try {
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Number(req.query.limit) || 10, 50);
+    const skip = (page - 1) * limit;
+
+    const [total, uploads] = await Promise.all([
+      OrderUpload.countDocuments(),
+      OrderUpload.find()
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("userId", "name email") // Populate user info
+        .lean()
+    ]);
+
+    res.json({
+      success: true,
+      data: uploads.map(u => ({
+        id: u._id,
+        fileName: u.fileName,
+        userName: u.userId?.name || "Unknown",
+        userEmail: u.userId?.email || "",
+        status: u.status,
+        processed: u.recordsProcessed || 0,
+        failed: u.recordsFailed || 0,
+        createdAt: u.createdAt
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit)
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
+   UPDATE CUSTOMER
+   PUT /api/admin/customers/:id
+===================================================== */
+export async function updateCustomer(req, res, next) {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    const customer = await CustomerMaster.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!customer) {
+      return res.status(404).json({ success: false, message: "Customer not found" });
+    }
+
+    res.json({ success: true, data: customer, message: "Customer updated successfully" });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
+   UPDATE PRODUCT
+   PUT /api/admin/products/:id
+===================================================== */
+export async function updateProduct(req, res, next) {
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    const product = await ProductMaster.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!product) {
+      return res.status(404).json({ success: false, message: "Product not found" });
+    }
+
+    res.json({ success: true, data: product, message: "Product updated successfully" });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
    EXPORTS
 ===================================================== */
 export default {
@@ -281,5 +377,8 @@ export default {
   exportMaster,
   getAuditHistory,
   getAdminDashboard,
-  searchMasterData
+  searchMasterData,
+  getRecentUploadsPaginated, // ✅ Added
+  updateCustomer, // ✅ Added
+  updateProduct // ✅ Added
 };

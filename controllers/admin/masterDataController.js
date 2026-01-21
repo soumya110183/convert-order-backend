@@ -210,13 +210,37 @@ const productOps = productRows
 
     if (!productCode || !rawProductName) return null;
 
-    // Use shared extraction logic
-    const { name, strength, variant } = splitProduct(rawProductName);
+    // ✅ CLEAN PRODUCT NAME (Remove TABS, CAPS, etc.)
+    // User wants "Only product name and its strength"
+    // e.g. "TORSINEX 10 TABS" -> "TORSINEX 10"
+    // e.g. "MECONERV PLUS OD CAPS" -> "MECONERV PLUS OD"
+    
+    function cleanNameForDB(name = "") {
+        return name
+          .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT|COMBIPACK)\b/gi, "")
+          .replace(/\b(\d+)\s*['`"]?S\b/gi, "") // Remove 10's, 10S
+          .replace(/\b\d+X\d+\b/gi, "")        // Remove 10X10
+          .replace(/\b(MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // 🔥 Remove units
+          .replace(/\s+/g, " ")
+          .trim();
+    }
+
+    const cleanDBName = cleanNameForDB(rawProductName);
+
+    // 🔥 FIX: Use cleanDBName (with TABLETS/15'S removed) for splitting
+    const { name, strength, variant } = splitProduct(cleanDBName);
 
     if (!name) {
       console.warn(`❌ Invalid product skipped: ${rawProductName}`);
       return null;
     }
+
+    // Reconstruct clean name: Name + Variant + Strength
+    // e.g., "VILDAPRIDE M 50/500MG TABLETS (15'S)" → "VILDAPRIDE M 50/500MG"
+    const reallyFinalName = [name, variant, strength].filter(Boolean).join(" ");
+    
+    // Let's use `reallyFinalName` as the stored productName.
+    // It is cleaner and structured.
 
     const cleanedProductName = [name, strength, variant]
       .filter(Boolean)
@@ -228,14 +252,14 @@ const productOps = productRows
         update: {
           $set: {
             productCode,
-            productName: rawProductName,
+            productName: reallyFinalName, // ✅ STORE CLEANED NAME
             baseName: name,
             dosage: strength || null,
             variant: variant || null,
             cleanedProductName,
             division: division || "",
-            pack: pack,           // ✅ Correctly mapped
-            boxPack: boxPack      // ✅ Correctly mapped
+            pack: pack,
+            boxPack: boxPack
           }
         },
         upsert: true
@@ -271,6 +295,12 @@ if (productOps.length) {
 
   console.log(`📊 Processing ${schemeRowsRaw.length} raw scheme rows...`);
 
+  // ✅ CLEAR EXISTING SCHEMES TO PREVENT DUPLICATES
+  if (schemeRowsRaw.length > 0) {
+    console.log("🧹 Clearing existing schemes before upload...");
+    await SchemeMaster.deleteMany({});
+  }
+
   // Track division per column index (0, 4, 8...)
   // key: column index, value: Division Name
   const blockDivisions = {}; 
@@ -287,18 +317,16 @@ if (productOps.length) {
 
       // A. Division Row Check (could be side-by-side)
       if (/DIVISION\s*:/i.test(rowStr)) {
-          // Scan each cell to see if it holds a division
-          for(let c = 0; c < totalCols; c++) {
+          // Scan block starts only
+          const BLOCK_STARTS = [0, 5];
+          for(const c of BLOCK_STARTS) {
              const cell = row[c] ? String(row[c]).trim() : "";
              if (/DIVISION\s*:/i.test(cell)) {
                  const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
                  if (divMatch) {
                      const divName = divMatch[1].trim().toUpperCase();
-                     // Update division for this column block
-                     // Align to block start (0, 4, 8) just in case
-                     const blockStart = c - (c % BLOCK_SIZE);
-                     blockDivisions[blockStart] = divName;
-                     console.log(`📂 Division found at Col ${c} (Block ${blockStart}): ${divName}`);
+                     blockDivisions[c] = divName;
+                     console.log(`📂 Division found at Col ${c}: ${divName}`);
                  }
              }
           }
@@ -309,8 +337,11 @@ if (productOps.length) {
       if (/PRODUCT.*MIN/i.test(rowStr)) continue;
       if (rowStr.length < 5) continue;
 
-      // C. Process 4-Col Blocks
-      for (let i = 0; i < totalCols; i += BLOCK_SIZE) {
+      // C. Process Blocks (Indices 0 and 5)
+      // The Excel has a GAP at index 4. So blocks are at 0 and 5.
+      const BLOCK_STARTS = [0, 5]; 
+
+      for (const i of BLOCK_STARTS) {
           // Extract block
           const pName = row[i];
           const minQ = row[i+1];
@@ -322,7 +353,8 @@ if (productOps.length) {
           
           let productName = pName ? String(pName).trim() : null;
           
-          if (!productName || productName.length < 3 || /^\d+$/.test(productName)) {
+          // Basic filtering (skip valid headers or trivial rows)
+          if (!productName || productName.length < 3 || /PRODUCT/i.test(productName) || /^\d+$/.test(productName)) {
               continue; 
           }
 
@@ -332,66 +364,150 @@ if (productOps.length) {
           
           if (Number.isNaN(minQty)) minQty = 0;
           if (Number.isNaN(freeQty)) freeQty = 0;
-          if (Number.isNaN(schemePercent)) schemePercent = 0;
+          if (Number.isNaN(schemePercent)) schemePercent = 0; // If percent is 0.2 (20%) or 20 (20%)?
+          
+          // Normalize percent (Excel might be 0.2 or 20)
+          // If < 1, assume decimal (0.2 = 20%). If > 1, assume value (20 = 20%)
+          if (schemePercent > 0 && schemePercent <= 1) {
+             // It's likely decimal 0.2
+             // Keep it as is? My code uses format: 20% -> 0.2
+          } else if (schemePercent > 1) {
+             schemePercent = schemePercent / 100;
+          }
 
           if (minQty === 0 && freeQty === 0 && schemePercent === 0) continue;
 
+
           // D. Map Product
           const cleanProductName = productName.replace(/\s+/g, " ").trim();
-          const { name: baseName, strength: dosage, variant } = splitProduct(cleanProductName);
           
-          // Use Division specific to this block
-          const currentDivision = blockDivisions[i];
-          if (!currentDivision) {
-              // Warn only once per block?
-             // console.warn(`⚠️ No division set for block ${i} row ${rIndex}, skipping ${productName}`);
-              skippedSchemes++;
-              continue;
+          // 🔥 HANDLE SLASH SEPARATED PRODUCTS (e.g., LEVOBACT 500/750)
+          let potentialNames = [];
+          if (cleanProductName.includes("/") && /\d+/.test(cleanProductName)) {
+            const parts = cleanProductName.split("/");
+            // Assuming format like "NAME 500/750"
+            const nameBaseMatch = parts[0].match(/^([A-Z\s\-]+)\s+(\d+)$/i);
+            if (nameBaseMatch) {
+              const base = nameBaseMatch[1];
+              const firstStrength = nameBaseMatch[2];
+              potentialNames.push(`${base} ${firstStrength}`);
+              
+              // Process subsequent parts
+              for (let k = 1; k < parts.length; k++) {
+                const part = parts[k].trim();
+                // If it's just a number, append to base
+                // If it's a full string?
+                const partClean = part.trim();
+                if (/^\d+$/.test(partClean)) {
+                   potentialNames.push(`${base} ${partClean}`);
+                } else {
+                   // e.g. "MF SUSP" in "DOLO MF JUNIOR/ MF SUSP"
+                   // Try to use it as is
+                   potentialNames.push(partClean); 
+                }
+              }
+            } else {
+              // Try plain split if no clear pattern
+              // e.g. "FERTIFLUS/ FERTIPLUS M"
+              potentialNames.push(parts[0].trim());
+              potentialNames.push(parts[1].trim());
+            }
+          } else {
+            potentialNames.push(cleanProductName);
           }
 
-          const normDivision = normalizeDivision(currentDivision);
-          const normBase = normalizeMedicalTerms(baseName);
-          const cleanedSearchName = [baseName, dosage, variant]
-            .filter(Boolean).join(' ').trim().toUpperCase();
+          // Process each potential name
+          for (const searchName of potentialNames) {
+              const { name: baseName, strength: dosage, variant } = splitProduct(searchName);
+              
+              // Use Division specific to this block
+              const currentDivision = blockDivisions[i];
+              if (!currentDivision) {
+                  skippedSchemes++;
+                  continue;
+              }
 
-          const matchedProduct =
-            allProducts.find(p =>
-              normalizeMedicalTerms(p.baseName) === normBase &&
-              normalizeDivision(p.division) === normDivision
-            ) ||
-            allProducts.find(p =>
-              normalizeMedicalTerms(p.cleanedProductName) ===
-                normalizeMedicalTerms(cleanedSearchName) &&
-              normalizeDivision(p.division) === normDivision
-            ) ||
-            allProducts.find(p =>
-              normalizeMedicalTerms(p.cleanedProductName).includes(normBase) &&
-              normalizeDivision(p.division) === normDivision
-            );
+              const normDivision = normalizeDivision(currentDivision);
+              const normBase = normalizeMedicalTerms(baseName);
+              const cleanedSearchName = [baseName, dosage, variant]
+                .filter(Boolean).join(' ').trim().toUpperCase();
 
-          if (!matchedProduct) {
-             console.warn(`❌ Scheme skipped – product not found: ${cleanProductName} (${currentDivision})`);
-             skippedSchemes++;
-             continue;
+              // 🔥 TRY MULTIPLE MATCHING STRATEGIES
+              let matchedProduct =
+                // 1. Exact cleaned name + division
+                allProducts.find(p =>
+                  normalizeMedicalTerms(p.cleanedProductName) === normalizeMedicalTerms(cleanedSearchName) &&
+                  normalizeDivision(p.division) === normDivision
+                ) ||
+                // 2. Base name match + division
+                allProducts.find(p =>
+                  normalizeMedicalTerms(p.baseName) === normBase &&
+                  normalizeDivision(p.division) === normDivision
+                ) ||
+                 // 3. Relaxed division check
+                allProducts.find(p =>
+                  normalizeMedicalTerms(p.cleanedProductName) === normalizeMedicalTerms(cleanedSearchName) &&
+                  (normalizeDivision(p.division).includes(normDivision) || normDivision.includes(normalizeDivision(p.division)))
+                ) ||
+                // 4. Reverse Inclusion (Excel Name includes DB Name) WITH Division Match
+                allProducts.find(p => 
+                   normBase.includes(normalizeMedicalTerms(p.baseName)) &&
+                   normalizeDivision(p.division) === normDivision &&
+                   p.baseName.length > 3 // Avoid matching short names like "BO"
+                );
+
+              // 5. 🔥 CROSS-DIVISION FALLBACK (If still not found)
+              // Many products are in DB under strict codes (CAR1) but Excel has full names (CARDI-CARE)
+              if (!matchedProduct) {
+                  // Try exact unique match globally
+                  const candidates = allProducts.filter(p => 
+                      normalizeMedicalTerms(p.cleanedProductName) === normalizeMedicalTerms(cleanedSearchName) ||
+                      normalizeMedicalTerms(p.baseName) === normBase ||
+                      normBase.includes(normalizeMedicalTerms(p.baseName))
+                  );
+
+                  // If we found exactly one candidate, use it regardless of division
+                  if (candidates.length === 1) {
+                      matchedProduct = candidates[0];
+                      // console.log(`🔄 Cross-Division Match: ${searchName} (${currentDivision}) -> ${matchedProduct.productName} (${matchedProduct.division})`);
+                  } 
+                  // If multiple, try to find "best" match? 
+                  else if (candidates.length > 1) {
+                      // Prefer one where division roughly matches or first one
+                      // Often divisions are just aliases
+                      matchedProduct = candidates[0]; 
+                  }
+              }
+
+              if (!matchedProduct) {
+                 console.warn(`❌ Scheme skipped – product not found: ${searchName} (${currentDivision})`);
+                 skippedSchemes++;
+                 continue;
+              }
+
+              const slab = {
+                minQty,
+                freeQty,
+                schemePercent: Number(schemePercent.toFixed(4))
+              };
+
+              // E. Aggregate
+              // Use Key from MATCHED PRODUCT if valid, but maybe group by Excel Division?
+              // The frontend might filter by "CARDI-CARE". If DB is "CAR3", we should probably use the Excel Division name for display/lookup
+              // BUT we need productCode.
+              
+              const key = `${matchedProduct.productCode}|${normalizeDivisionAlias(currentDivision)}`;
+              if (!schemeMap.has(key)) {
+                  schemeMap.set(key, {
+                      productCode: matchedProduct.productCode,
+                      productName: matchedProduct.productName,
+                      division: normalizeDivision(currentDivision), // Store normalized Excel div
+                      slabs: []
+                  });
+              }
+              
+              schemeMap.get(key).slabs.push(slab);
           }
-
-          const slab = {
-            minQty,
-            freeQty,
-            schemePercent: Number(schemePercent.toFixed(4))
-          };
-
-          // E. Aggregate
-          const key = `${matchedProduct.productCode}|${normalizeDivisionAlias(currentDivision)}`;
-          if (!schemeMap.has(key)) {
-              schemeMap.set(key, {
-                  productCode: matchedProduct.productCode,
-                  productName: matchedProduct.productName,
-                  division: normalizeDivision(currentDivision),
-                  slabs: []
-              });
-          }
-          schemeMap.get(key).slabs.push(slab);
       }
   }
 
@@ -409,13 +525,15 @@ if (productOps.length) {
         updateOne: {
             filter: {
                 productCode: data.productCode,
-                division: normalizeDivisionAlias(data.division)
+                // division: normalizeDivisionAlias(data.division) // Use DB division or Excel? 
+                // Scheme lookup usually relies on Product Code. 
+                // But if we want to query by Division, we should store that.
             },
             update: {
                 $set: {
                     productCode: data.productCode,
                     productName: data.productName,
-                    division: data.division,
+                    division: data.division, // Excel division
                     isActive: true,
                     slabs: uniqueSlabs 
                 }

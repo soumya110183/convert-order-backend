@@ -10,6 +10,7 @@ import OrderUpload from "../models/orderUpload.js";
 import ProductMaster from "../models/productMaster.js";
 import CustomerMaster from "../models/customerMaster.js";
 import SchemeMaster from "../models/schemeMaster.js";
+import mongoose from "mongoose";
 import XLSX from "xlsx-js-style";
 import crypto from "crypto";
 import path from "path";
@@ -57,7 +58,9 @@ function isJunkLine(text = "") {
   const upper = text.toUpperCase();
   return (
     upper.length < MIN_PRODUCT_LENGTH ||
-    /^(APPROX|MICRO|PRINTED|SUPPLIER|GSTIN|DL NO|PAGE)/i.test(upper)
+    upper.length < MIN_PRODUCT_LENGTH ||
+    /^(APPROX|PRINTED|SUPPLIER|GSTIN|DL NO|PAGE)/i.test(upper) ||
+    /^MICRO\s+(LABS|DIVISION|HEALTHCARE)/i.test(upper) // Only block MICRO headers, allow MICRODOX
   );
 }
 
@@ -188,6 +191,26 @@ export const extractOrderFields = async (req, res, next) => {
 
       // Match product
       const match = matchProductSmart(cleanedDesc, products);
+
+   // 🔥 NEW: Handle candidates (no exact match, but similar products found)
+   if (match && match.matchedProduct === null && match.candidates) {
+     matchStats.failed++;
+     
+     validRows.push({
+       ITEMDESC: cleanedDesc,
+       ORDERQTY: qty,
+       matchedProduct: null,
+       matchFailed: true,
+       matchReason: match.reason || "MANUAL_SELECTION_REQUIRED",
+       candidates: match.candidates, // 🔥 Pass candidates to frontend
+       SAPCODE: "",
+       PACK: 0,
+       "BOX PACK": 0,
+       DVN: ""
+     });
+     
+     continue;
+   }
 
    if (!match) {
   matchStats.failed++;
@@ -440,6 +463,16 @@ if (!Array.isArray(sourceRows) || sourceRows.length === 0) {
   });
 }
 
+// 📋 CHECK FOR MULTI-SHEET ORGANIZATION
+const sheets = req.body.sheets || [];
+const hasSheets = Array.isArray(sheets) && sheets.length > 0;
+
+if (hasSheets) {
+  console.log(`📋 Multi-sheet mode: ${sheets.length} sheets detected`);
+  sheets.forEach(sheet => {
+    console.log(`   - ${sheet.name}: ${sheet.productIndices.length} products`);
+  });
+}
 
     const output = [];
     const errors = [];
@@ -683,13 +716,54 @@ export const getOrderById = async (req, res, next) => {
 
 export const getOrderHistory = async (req, res) => {
   try {
-    const history = await OrderUpload.find({ userId: req.user.id })
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .lean();
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const skip = (page - 1) * limit;
+
+    // ✅ Build Query
+    const query = { userId: req.user.id };
+
+    // Search (Case-insensitive regex on fileName)
+    if (req.query.search) {
+      query.fileName = { $regex: req.query.search, $options: "i" };
+    }
+
+    // Status Filter
+    if (req.query.status && req.query.status !== "all" && req.query.status !== "ALL") {
+      query.status = req.query.status.toUpperCase();
+    }
+
+    // Fetch Global Stats (Unfiltered)
+    // Fetch History (Filtered)
+    const [globalTotal, history, successCount, failedCount, recordsAgg, filteredTotal] = await Promise.all([
+      OrderUpload.countDocuments({ userId: req.user.id }), // Stats Total
+      OrderUpload.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      OrderUpload.countDocuments({ userId: req.user.id, status: "CONVERTED" }), // Stats Success
+      OrderUpload.countDocuments({ userId: req.user.id, status: "FAILED" }), // Stats Failed
+      OrderUpload.aggregate([
+        { $match: { userId: new mongoose.Types.ObjectId(req.user.id) } }, 
+        {
+          $group: {
+            _id: null,
+            total: { $sum: { $ifNull: ["$recordsProcessed", 0] } }
+          }
+        }
+      ]),
+      OrderUpload.countDocuments(query) // ✅ Pagination Total (Filtered)
+    ]);
 
     res.json({
       success: true,
+      stats: {
+        total: globalTotal,
+        successful: successCount,
+        failed: failedCount,
+        records: recordsAgg[0]?.total || 0
+      },
       history: history.map(h => ({
         id: h._id,
         fileName: h.fileName,
@@ -698,7 +772,13 @@ export const getOrderHistory = async (req, res) => {
         failed: h.recordsFailed || 0,
         customerName: h.customerName,
         createdAt: h.createdAt
-      }))
+      })),
+      pagination: {
+        page,
+        limit,
+        total: filteredTotal, // ✅ Pager uses filtered count
+        totalPages: Math.ceil(filteredTotal / limit)
+      }
     });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });

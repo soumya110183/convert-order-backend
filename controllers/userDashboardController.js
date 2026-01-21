@@ -1,4 +1,5 @@
 import OrderUpload from "../models/orderUpload.js";
+import mongoose from "mongoose";
 
 /* =====================================================
    USER DASHBOARD
@@ -20,7 +21,7 @@ export const getUserDashboard = async (req, res, next) => {
       OrderUpload.countDocuments({ userId, status: "FAILED" }),
 
       OrderUpload.aggregate([
-        { $match: { userId } },
+        { $match: { userId: new mongoose.Types.ObjectId(userId) } },
         {
           $group: {
             _id: null,

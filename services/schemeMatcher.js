@@ -32,14 +32,16 @@ function findApplicableScheme(schemes, productCode, itemDesc, customerCode, divi
 
     // 3. Check Division (Optional but preferred)
     if (s.division && normalizedDiv) {
-        // If both have division, they should match? 
-        // Or if scheme has division, it only applies to products in that division?
-        // For now, let's treat it as a filter if present
-        if (normalize(s.division) !== normalizedDiv) {
-            // Soft mismatch? Or hard? 
-            // Usually schemes are division specific.
-            // Let's enforce it if provided.
-            return false;
+        const schemeDiv = normalize(s.division);
+        // Relaxed match: Allow if one includes the other (CARDI-CARE vs CAR3 is hard)
+        // BUT strict product code match is usually sufficient.
+        // Let's only fail if they are COMPLETELY different and length is significant
+        // Actually, for now, if Product Code matches, we should trust it. 
+        // Division in Scheme Master is often descriptive.
+        
+        // Only check if Product Code is NOT present (name-only match)
+        if (!codeMatch && schemeDiv !== normalizedDiv && !schemeDiv.includes(normalizedDiv) && !normalizedDiv.includes(schemeDiv)) {
+             return false;
         }
     }
 

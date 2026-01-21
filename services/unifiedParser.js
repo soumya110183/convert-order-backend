@@ -143,6 +143,8 @@ function looksLikeProduct(text, strict = true) {
   // 🔥 PRIORITY: Table row detection (works even without form words)
   // Pattern: "2 218038 NITROFIX 30SR 10,S 10 1957.50 50"
   const tokens = text.trim().split(/\s+/);
+  
+  // Normal format: serial code product ...
   if (tokens.length >= 5 && /^\d{1,2}$/.test(tokens[0]) && /^\d{3,6}$/.test(tokens[1])) {
     const serialNum = Number(tokens[0]);
     if (serialNum >= 1 && serialNum <= 99 && /\d+\.\d{2}/.test(text) && /[A-Z]{3,}/i.test(text)) {
@@ -150,6 +152,18 @@ function looksLikeProduct(text, strict = true) {
       return true;
     }
   }
+
+  // 🔥 REVERSED TABLE ROW: qty price serial code product
+  // Pattern: "10 35 3148.60 2 110010 MECONERV 500"
+  if (tokens.length >= 6 && /^\d{1,2}$/.test(tokens[0]) && /^\d+\.\d{2}$/.test(tokens[2])) {
+    // tokens[0] = pack/qty, tokens[1] = qty, tokens[2] = price.xx
+    // tokens[3] should be serial (1-2 digits), tokens[4] should be code (3-6 digits)
+    if (/^\d{1,2}$/.test(tokens[3]) && /^\d{3,6}$/.test(tokens[4]) && /[A-Z]{3,}/i.test(text)) {
+      debug(`  ✅ [TABLE-REVERSED] Serial ${tokens[3]}, Code ${tokens[4]}`);
+      return true;
+    }
+  }
+
 
   // ✅ MUST contain medicine identity
   const hasForm = /\b(TAB|TABLET|CAP|CAPSULE|CAPS|INJ|SYRUP|SYP|DROPS|DRPS|CREAM|GEL|OINT|VIAL|AMP)\b/i.test(upper);
@@ -197,7 +211,12 @@ function looksLikeProductRelaxed(text) {
 
   // ❌ Reject if too short or too long
   const words = upper.split(/\s+/).filter(w => w.length > 0);
-  if (words.length < 2 || words.length > 15) return false;
+  if (words.length < 1 || words.length > 15) return false;  // 🔥 Changed from 2 to 1
+
+  // ✅ Pattern 1: Single uppercase word with good length (PLAGERINE, MECONERV)
+  if (words.length === 1 && words[0].length >= 5 && /^[A-Z]+$/.test(words[0])) {
+    return true;
+  }
 
   // ✅ Pattern 2: Pure uppercase brand name (e.g. "AVAS", "ANGIZAAR", "VILDAPRIDE M")
   // Must be significant length (3+) and look like a name
@@ -208,8 +227,9 @@ function looksLikeProductRelaxed(text) {
      if (letters >= 3) return true;
   }
 
-  // ❌ Reject if no numbers at all (products usually have codes, strengths, or packs)
-  if (!/\d/.test(upper)) return false;
+  // 🔥 RELAXED: Products don't always have numbers (PLAGERINE, MECONERV)
+  // Only check number patterns if we haven't matched above
+  // if (!/\d/.test(upper)) return false;  // DISABLED
 
   // ✅ Has brand-like pattern: WORD + NUMBER (DOLO 650, AMOXICILLIN 500)
   if (/\b[A-Z]{3,}[A-Z\s\-]*\d+/i.test(upper)) {
@@ -576,9 +596,27 @@ export function extractProductName(text, qty) {
   t = t.replace(/^\d+['`"]?S\s+/i, "");
   t = t.replace(/^\d+X\d+[A-Z]?\s+/i, "");
   
-  // 🔥 STEP 3: Remove ALL leading numbers (serial, qty, codes)
-  while (/^\d+\s+/.test(t)) {
-    t = t.replace(/^\d+\s+/, "");
+  
+  // 🔥 STEP 3: Detect reversed format (qty/price BEFORE product)
+  // Pattern: "10 28 4876.76 1 110009 MECONERV 1500MG"
+  // Normal: "1 110009 MECONERV 1500MG 10 28 4876.76"
+  const hasEarlyPrice = /^\d+\s+\d+\s+\d+\.\d{2}/.test(t);
+  
+  if (hasEarlyPrice) {
+    // Extract product from AFTER the price
+    const priceMatch = t.match(/\d+\.\d{2}\s+(.+)/);
+    if (priceMatch) {
+      t = priceMatch[1]; // Everything after the price
+      // Remove leading serial/code numbers
+      while (/^\d+\s+/.test(t)) {
+        t = t.replace(/^\d+\s+/, "");
+      }
+    }
+  } else {
+    // Normal format: Remove ALL leading numbers (serial, qty, codes)
+    while (/^\d+\s+/.test(t)) {
+      t = t.replace(/^\d+\s+/, "");
+    }
   }
 
   // 🔥 STEP 4: Find form word and keep only up to it
@@ -595,8 +633,10 @@ export function extractProductName(text, qty) {
     // No form word - extract from table row
     // Pattern: "NITROFIX 30SR 10,S 10 1957.50 50"
     
-    // Remove quantity if known
-    if (qty) {
+    // 🔥 FIX: Only remove qty if NOT reversed format
+    // Reversed format: qty is BEFORE product, already removed
+    // Normal format: qty is AFTER product, needs removal
+    if (!hasEarlyPrice && qty) {
       t = t.replace(new RegExp(`\\b${qty}\\b.*$`), "");
     }
     
@@ -611,27 +651,50 @@ export function extractProductName(text, qty) {
     t = t.replace(/\s+\d+['`"]?S\s*$/gi, "");
     t = t.replace(/\s+\d{1,2},S\s*$/gi, "");  // Remove "10,S" pattern
     
-    // Remove trailing small numbers (30, 10, 20, etc - likely quantity)
-    t = t.replace(/\s+\d{1,2}\s*$/g, "");
+    // 🔥 SMART PACK REMOVAL: Remove trailing numbers that are likely pack sizes
+    // Keep: Strength numbers (part of name like "ARBITEL 40", "DOLO 650")
+    // Remove: Pack sizes (typically appear after strength, like "ARBITEL 40 15")
     
-    // Get first meaningful words (product name)
     const words = t.trim().split(/\s+/);
     const productWords = [];
-    for (const w of words) {
-      if (/[A-Z]/i.test(w) || /^\d+$/.test(w)) {
+    let foundStrength = false;
+    
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      
+      // If it's a letter-based word, always include
+      if (/[A-Z]/i.test(w)) {
         productWords.push(w);
-        if (productWords.length >= 5) break;  // Limit to 5 words
+        continue;
       }
+      
+      // If it's a number
+      if (/^\d+(\.\d+)?$/.test(w)) {
+        // If we haven't found a strength yet, this is likely it
+        if (!foundStrength) {
+          productWords.push(w);
+          foundStrength = true;
+        } else {
+          // We already have a strength, this is likely pack/qty - STOP
+          break;
+        }
+      }
+      
+      if (productWords.length >= 6) break;
     }
+    
     t = productWords.join(" ");
   }
 
-  // 🔥 STEP 5: Normalize form words (TABLET→TAB, CAPSULE→CAP, etc.)
-  const cleaned = t
+  // ✅ NEW: Apply global cleaning (Remove TABS, CAPS, MG, ML, etc)
+  t = t
+    .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT)\b/gi, "")
+    .replace(/\b(\d+)\s*['`"]?S\b/gi, "")
+    .replace(/\b(MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // 🔥 Remove units
     .replace(/\s+/g, " ")
     .trim();
-  
-  return normalizeProductName(cleaned);
+
+  return normalizeProductName(t);
 }
 
 
