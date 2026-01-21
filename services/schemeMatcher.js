@@ -1,28 +1,61 @@
 // services/schemeMatcher.js
 
-function normalizeName(text = "") {
-  return String(text)
-    .toUpperCase()
-    .replace(/[^A-Z0-9 ]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalize(text = "") {
+  return String(text).toUpperCase().trim();
 }
 
-export function applyScheme({ productCode, orderQty, itemDesc, schemes }) {
+/**
+ * Find the best applicable scheme for a given product and context
+ */
+function findApplicableScheme(schemes, productCode, itemDesc, customerCode, division) {
+  const normalizedCode = normalize(productCode);
+  const normalizedDesc = normalize(itemDesc);
+  const normalizedDiv = normalize(division);
+  const normalizedCust = normalize(customerCode);
 
-  const scheme = schemes.find(s =>
-    s.isActive &&
-    (
-      s.productCode === productCode ||
-   normalizeName(s.productName) === normalizeName(itemDesc)
+  return schemes.find(s => {
+    if (!s.isActive) return false;
 
-    )
-  );
+    // 1. Match Product (Code OR Name)
+    const codeMatch = s.productCode && normalize(s.productCode) === normalizedCode;
+    const nameMatch = s.productName && normalize(s.productName) === normalizedDesc;
+    
+    if (!codeMatch && !nameMatch) return false;
+
+    // 2. Check Customer Restriction (if defined)
+    if (s.applicableCustomers && s.applicableCustomers.length > 0) {
+      // If scheme lists customers, ours MUST be in the list
+      if (!s.applicableCustomers.includes(normalizedCust)) {
+        return false;
+      }
+    }
+
+    // 3. Check Division (Optional but preferred)
+    if (s.division && normalizedDiv) {
+        // If both have division, they should match? 
+        // Or if scheme has division, it only applies to products in that division?
+        // For now, let's treat it as a filter if present
+        if (normalize(s.division) !== normalizedDiv) {
+            // Soft mismatch? Or hard? 
+            // Usually schemes are division specific.
+            // Let's enforce it if provided.
+            return false;
+        }
+    }
+
+    return true;
+  });
+}
+
+export function applyScheme({ productCode, orderQty, itemDesc, division, customerCode, schemes }) {
+  const scheme = findApplicableScheme(schemes, productCode, itemDesc, customerCode, division);
 
   if (!scheme || !scheme.slabs?.length) {
     return { schemeApplied: false };
   }
 
+  // Find best qualifying slab
+  // Sort descending by minQty so we get the highest applicable slab
   const eligibleSlab = scheme.slabs
     .filter(s => orderQty >= s.minQty)
     .sort((a, b) => b.minQty - a.minQty)[0];
@@ -43,7 +76,8 @@ export function applyScheme({ productCode, orderQty, itemDesc, schemes }) {
     freeQty,
     schemePercent,
     appliedSlab: eligibleSlab,
-    availableSlabs: scheme.slabs
+    availableSlabs: scheme.slabs,
+    schemeName: scheme.schemeName // might be useful
   };
 }
 
@@ -52,10 +86,8 @@ export function applyScheme({ productCode, orderQty, itemDesc, schemes }) {
  * Find better scheme opportunities
  * e.g. If Qty=80 and Scheme starts at 100, suggest 100
  */
-export function findUpsellOpportunity({ productCode, orderQty, schemes }) {
-  const scheme = schemes.find(
-    s => s.productCode === productCode && s.isActive
-  );
+export function findUpsellOpportunity({ productCode, orderQty, itemDesc, division, customerCode, schemes }) {
+  const scheme = findApplicableScheme(schemes, productCode, itemDesc, customerCode, division);
 
   if (!scheme || !scheme.slabs?.length) return null;
 
@@ -86,5 +118,20 @@ export function findUpsellOpportunity({ productCode, orderQty, schemes }) {
   }
 
   return null;
+}
+
+export function getSchemesForProduct({ productCode, customerCode, division, schemes }) {
+    const scheme = findApplicableScheme(schemes, productCode, "", customerCode, division);
+    
+    if(!scheme || !scheme.slabs?.length) return [];
+
+    return scheme.slabs.map(slab => ({
+        ...slab,
+        schemeName: scheme.schemeName || "Scheme",
+        productCode: scheme.productCode,
+        minQty: slab.minQty,
+        freeQty: slab.freeQty,
+        schemePercent: slab.schemePercent
+    })).sort((a,b) => a.minQty - b.minQty); // Sort by min qty ascending
 }
 

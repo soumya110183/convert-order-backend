@@ -5,6 +5,7 @@ import crypto from "crypto";
 import { uploadMasterExcel } from "../../services/masterUploadService.js";
 import CustomerMaster from "../../models/customerMaster.js";
 import ProductMaster from "../../models/productMaster.js";
+import SchemeMaster from "../../models/schemeMaster.js";
 import InvoiceAudit from "../../models/invoiceAudit.js";
 import User from "../../models/User.js";
 
@@ -197,6 +198,7 @@ export async function getAdminDashboard(req, res, next) {
     const [
       customerCount,
       productCount,
+      schemeCount,
       userCount,
       uploadCount,
       successCount,
@@ -204,6 +206,7 @@ export async function getAdminDashboard(req, res, next) {
     ] = await Promise.all([
       CustomerMaster.countDocuments(),
       ProductMaster.countDocuments(),
+      SchemeMaster.countDocuments(),
       User.countDocuments(),
       InvoiceAudit.countDocuments(),
       InvoiceAudit.countDocuments({ status: "COMPLETED" }),
@@ -228,7 +231,8 @@ export async function getAdminDashboard(req, res, next) {
       },
       masterData: {
         customers: customerCount,
-        products: productCount
+        products: productCount,
+        schemes: schemeCount  // ✅ ADDED
       }
     });
 

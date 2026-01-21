@@ -490,6 +490,7 @@ if (!Array.isArray(sourceRows) || sourceRows.length === 0) {
   orderQty: qty,
   itemDesc: row.ITEMDESC,
   division: row.DVN,
+  customerCode: customer.customerCode, // ✅ Added customer context
   schemes
 });
 
@@ -730,6 +731,9 @@ export const checkSchemes = async (req, res, next) => {
         const suggestion = findUpsellOpportunity({
             productCode,
             orderQty: qty,
+            itemDesc: row.ITEMDESC,
+            division: row.DVN, // Use division if available
+            customerCode: req.body.customerCode, // ✅ Use provided customer code
             schemes
         });
 
@@ -748,10 +752,39 @@ export const checkSchemes = async (req, res, next) => {
   }
 };
 
+export const getProductSchemes = async (req, res, next) => {
+    try {
+        const { productCode } = req.params;
+        const { customerCode, division } = req.query;
+
+        if(!productCode) {
+            return res.status(400).json({ success: false, message: "Product code required" });
+        }
+
+        const schemes = await SchemeMaster.find({ isActive: true }).lean();
+        
+        // Import dynamically to avoid circular deps if any, or just use top level import
+        const { getSchemesForProduct } = await import("../services/schemeMatcher.js");
+
+        const availableSchemes = getSchemesForProduct({
+            productCode,
+            customerCode,
+            division,
+            schemes
+        });
+
+        res.json({ success: true, schemes: availableSchemes });
+
+    } catch(err) {
+        next(err);
+    }
+};
+
 export default {
   extractOrderFields,
   convertOrders,
   getOrderById,
   getOrderHistory,
-  checkSchemes
+  checkSchemes,
+  getProductSchemes
 };

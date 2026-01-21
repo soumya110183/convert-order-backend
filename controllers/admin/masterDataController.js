@@ -9,7 +9,7 @@ import XLSX from "xlsx-js-style";
 import CustomerMaster from "../../models/customerMaster.js";
 import ProductMaster from "../../models/productMaster.js";
 import MasterOrder from "../../models/masterOrder.js";
-import { readExcelSheets } from "../../utils/readExcels.js";
+import { readExcelSheets, readExcelMatrix } from "../../utils/readExcels.js";
 import SchemeMaster from "../../models/schemeMaster.js";
 import { splitProduct } from "../../utils/splitProducts.js";
 
@@ -100,8 +100,9 @@ function getSchemeRowValues(row, lastProductName = "") {
    MASTER DATABASE UPLOAD
 ===================================================== */
 export const uploadMasterDatabase = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
+  let session = null;
+  // const session = await mongoose.startSession();
+  // session.startTransaction();
 
   try {
     if (!req.file) {
@@ -182,7 +183,7 @@ export const uploadMasterDatabase = async (req, res) => {
     }).filter(Boolean);
 
     if (customerOps.length > 0) {
-      const result = await CustomerMaster.bulkWrite(customerOps, { session });
+      const result = await CustomerMaster.bulkWrite(customerOps);
       inserted.customers = result.upsertedCount || 0;
       updated.customers = result.modifiedCount || 0;
     }
@@ -244,7 +245,7 @@ const productOps = productRows
   .filter(Boolean);
 
 if (productOps.length) {
-  const result = await ProductMaster.bulkWrite(productOps, { session });
+  const result = await ProductMaster.bulkWrite(productOps);
   inserted.products = result.upsertedCount;
   updated.products = result.modifiedCount;
   console.log(`✅ Products: ${inserted.products} inserted, ${updated.products} updated`);
@@ -258,176 +259,183 @@ if (productOps.length) {
 
 // This section goes AFTER product processing in your uploadMasterDatabase function
 
-const schemeRows =
-  Object.entries(sheets).find(([k]) =>
-    k.toLowerCase().includes("scheme")
-  )?.[1] || [];
-
-console.log(`📊 Processing ${schemeRows.length} scheme rows...`);
-
-let currentDivision = "";
-const schemeOps = [];
-let skippedSchemes = 0;
-
-
-let lastProductName = "";
-
-for (const r of schemeRows) {
-  // ✅ 1. DETECT DIVISION HEADER
-  const rawRow = Object.values(r).join(' ').trim();
+  // -------------------------------------------------------------
+  // 3. PROCESS SCHEMES (Raw Matrix Mode)
+  // -------------------------------------------------------------
+  const rawSheets = readExcelMatrix(req.file.buffer);
   
-  if (/DIVISION\s*:/i.test(rawRow)) {
-    const divMatch = rawRow.match(/DIVISION\s*:\s*([A-Z0-9\-]+)/i);
-    if (divMatch) {
-      currentDivision = divMatch[1].trim().toUpperCase();
-      console.log(`📂 Division: ${currentDivision}`);
-    }
-    continue;
-  }
+  const schemeRowsRaw = 
+    Object.entries(rawSheets).find(([k]) =>
+      k.toLowerCase().includes("scheme")
+    )?.[1] || [];
 
-  // ✅ 2. SKIP HEADER/JUNK ROWS
-  const junkPattern = /^(NO\.?|PRODUCT|MIN\s*QTY|FREE\s*QTY|SCHEME|DIVISION|PAGE|TOTAL)/i;
-  if (junkPattern.test(rawRow) || rawRow.length < 5) {
-    continue;
-  }
+  console.log(`📊 Processing ${schemeRowsRaw.length} raw scheme rows...`);
 
-  // ✅ 3. EXTRACT SCHEME DATA
-  // Look for columns: PRODUCT, MIN QTY, FREE QTY, SCHEME %
-let {
-  productName,
-  minQty,
-  freeQty,
-  schemePercent
-} = getSchemeRowValues(r);
+  // Track division per column index (0, 4, 8...)
+  // key: column index, value: Division Name
+  const blockDivisions = {}; 
+  const schemeOps = [];
+  let skippedSchemes = 0;
+  const schemeMap = new Map(); 
 
-// 🔁 carry forward product name
-if (!productName && lastProductName) {
-  productName = lastProductName;
-}
-if (!productName || productName.length < 3) continue;
+  const BLOCK_SIZE = 4;
 
-lastProductName = productName;
-if (
-  !productName ||
-  productName.length < 3 ||
-  /^\d+$/.test(productName)
-) {
-  skippedSchemes++;
-  continue;
-}
+  for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
+      const row = schemeRowsRaw[rIndex];
+      const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
+      const totalCols = row.length;
 
-
-
-const cleanProductName = productName.replace(/\s+/g, " ").trim();
-  const { name: baseName, strength: dosage, variant } = splitProduct(cleanProductName);
-  
-  // Skip invalid schemes
-if (!minQty && !freeQty && !schemePercent) {
-  // allow carry-forward rows
-  continue;
-}
-
-
-  // ✅ 4. FIND MATCHING PRODUCT FROM MASTER
-  
-  // Strategy 1: Match by cleaned product name
-  const cleanedSearchName = [baseName, dosage, variant]
-    .filter(Boolean)
-    .join(' ')
-    .trim()
-    .toUpperCase();
-  
-
-
-const normDivision = normalizeDivision(currentDivision);
-const normBase = normalizeMedicalTerms(baseName);
-
-const matchedProduct =
-  allProducts.find(p =>
-    normalizeMedicalTerms(p.baseName) === normBase &&
-    normalizeDivision(p.division) === normDivision
-  ) ||
-  allProducts.find(p =>
-    normalizeMedicalTerms(p.cleanedProductName) ===
-      normalizeMedicalTerms(cleanedSearchName) &&
-    normalizeDivision(p.division) === normDivision
-  ) ||
-  allProducts.find(p =>
-    normalizeMedicalTerms(p.cleanedProductName).includes(normBase) &&
-    normalizeDivision(p.division) === normDivision
-  );
-
-
-
-
-  if (!matchedProduct) {
-    console.warn(
-      `❌ Scheme skipped – product not found: ${cleanProductName} (${currentDivision})`
-    );
-    skippedSchemes++;
-    continue;
-  }
-
-  console.log(
-    `✅ Scheme mapped: ${matchedProduct.productCode} | ${matchedProduct.productName}`
-  );
-// 🧹 sanitize slab values
-if (Number.isNaN(minQty)) continue;
-if (Number.isNaN(freeQty)) freeQty = 0;
-if (Number.isNaN(schemePercent)) schemePercent = 0;
-
-// percent-only scheme
-if (schemePercent > 0 && freeQty === 0) {
-  freeQty = 0;
-}
-
-// qty-only scheme
-if (freeQty > 0 && schemePercent === 0) {
-  schemePercent = 0;
-}
-const slab = {
-  minQty: Number(minQty),
-  freeQty: Number(freeQty),
-  schemePercent: Number(schemePercent.toFixed(4))
-};
-
-
-  // ✅ 5. CREATE SCHEME OPERATION
- schemeOps.push({
-  updateOne: {
-    filter: {
-      productCode: matchedProduct.productCode,
-     division: normalizeDivisionAlias(currentDivision)
-
-    },
-    update: {
-      $set: {
-        productCode: matchedProduct.productCode,
-        productName: matchedProduct.productName,
-        division: normalizeDivision(currentDivision),
-        isActive: true
-      },
-      $push: {
-       slabs: slab
-
+      // A. Division Row Check (could be side-by-side)
+      if (/DIVISION\s*:/i.test(rowStr)) {
+          // Scan each cell to see if it holds a division
+          for(let c = 0; c < totalCols; c++) {
+             const cell = row[c] ? String(row[c]).trim() : "";
+             if (/DIVISION\s*:/i.test(cell)) {
+                 const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
+                 if (divMatch) {
+                     const divName = divMatch[1].trim().toUpperCase();
+                     // Update division for this column block
+                     // Align to block start (0, 4, 8) just in case
+                     const blockStart = c - (c % BLOCK_SIZE);
+                     blockDivisions[blockStart] = divName;
+                     console.log(`📂 Division found at Col ${c} (Block ${blockStart}): ${divName}`);
+                 }
+             }
+          }
+          continue;
       }
-    },
-    upsert: true
-  }
-});
 
-}
+      // B. Skip Header/Junk
+      if (/PRODUCT.*MIN/i.test(rowStr)) continue;
+      if (rowStr.length < 5) continue;
+
+      // C. Process 4-Col Blocks
+      for (let i = 0; i < totalCols; i += BLOCK_SIZE) {
+          // Extract block
+          const pName = row[i];
+          const minQ = row[i+1];
+          const freeQ = row[i+2];
+          const pct = row[i+3];
+
+          // Check validity
+          if (!pName && !minQ && !freeQ && !pct) continue; 
+          
+          let productName = pName ? String(pName).trim() : null;
+          
+          if (!productName || productName.length < 3 || /^\d+$/.test(productName)) {
+              continue; 
+          }
+
+          let minQty = Number(minQ);
+          let freeQty = Number(freeQ);
+          let schemePercent = Number(pct);
+          
+          if (Number.isNaN(minQty)) minQty = 0;
+          if (Number.isNaN(freeQty)) freeQty = 0;
+          if (Number.isNaN(schemePercent)) schemePercent = 0;
+
+          if (minQty === 0 && freeQty === 0 && schemePercent === 0) continue;
+
+          // D. Map Product
+          const cleanProductName = productName.replace(/\s+/g, " ").trim();
+          const { name: baseName, strength: dosage, variant } = splitProduct(cleanProductName);
+          
+          // Use Division specific to this block
+          const currentDivision = blockDivisions[i];
+          if (!currentDivision) {
+              // Warn only once per block?
+             // console.warn(`⚠️ No division set for block ${i} row ${rIndex}, skipping ${productName}`);
+              skippedSchemes++;
+              continue;
+          }
+
+          const normDivision = normalizeDivision(currentDivision);
+          const normBase = normalizeMedicalTerms(baseName);
+          const cleanedSearchName = [baseName, dosage, variant]
+            .filter(Boolean).join(' ').trim().toUpperCase();
+
+          const matchedProduct =
+            allProducts.find(p =>
+              normalizeMedicalTerms(p.baseName) === normBase &&
+              normalizeDivision(p.division) === normDivision
+            ) ||
+            allProducts.find(p =>
+              normalizeMedicalTerms(p.cleanedProductName) ===
+                normalizeMedicalTerms(cleanedSearchName) &&
+              normalizeDivision(p.division) === normDivision
+            ) ||
+            allProducts.find(p =>
+              normalizeMedicalTerms(p.cleanedProductName).includes(normBase) &&
+              normalizeDivision(p.division) === normDivision
+            );
+
+          if (!matchedProduct) {
+             console.warn(`❌ Scheme skipped – product not found: ${cleanProductName} (${currentDivision})`);
+             skippedSchemes++;
+             continue;
+          }
+
+          const slab = {
+            minQty,
+            freeQty,
+            schemePercent: Number(schemePercent.toFixed(4))
+          };
+
+          // E. Aggregate
+          const key = `${matchedProduct.productCode}|${normalizeDivisionAlias(currentDivision)}`;
+          if (!schemeMap.has(key)) {
+              schemeMap.set(key, {
+                  productCode: matchedProduct.productCode,
+                  productName: matchedProduct.productName,
+                  division: normalizeDivision(currentDivision),
+                  slabs: []
+              });
+          }
+          schemeMap.get(key).slabs.push(slab);
+      }
+  }
+
+  // ✅ 4. CREATE UPSERT OPERATIONS (from Map)
+  for (const [key, data] of schemeMap.entries()) {
+    const uniqueSlabs = data.slabs.filter((slab, index, self) =>
+        index === self.findIndex((t) => (
+            t.minQty === slab.minQty &&
+            t.freeQty === slab.freeQty &&
+            t.schemePercent === slab.schemePercent
+        ))
+    );
+
+    schemeOps.push({
+        updateOne: {
+            filter: {
+                productCode: data.productCode,
+                division: normalizeDivisionAlias(data.division)
+            },
+            update: {
+                $set: {
+                    productCode: data.productCode,
+                    productName: data.productName,
+                    division: data.division,
+                    isActive: true,
+                    slabs: uniqueSlabs 
+                }
+            },
+            upsert: true
+        }
+    }); 
+  }
+
 
 console.log(`💾 Finalizing bulkWrite for ${schemeOps.length} schemes...`);
 console.log(`⚠️ Skipped ${skippedSchemes} schemes due to missing products or invalid data`);
 
 if (schemeOps.length > 0) {
-  await SchemeMaster.bulkWrite(schemeOps, { session });
+  await SchemeMaster.bulkWrite(schemeOps);
 }
 
 /* ✅ COMMIT TRANSACTION */
-await session.commitTransaction();
-session.endSession();
+// await session.commitTransaction();
+// session.endSession();
 
 res.json({
   success: true,
@@ -439,12 +447,14 @@ res.json({
 });
 
   } catch (err) {
-    await session.abortTransaction();
-    session.endSession();
+    console.log("⚠️ CAUGHT ERROR IN CONTROLLER:", err.message);
+    // await session.abortTransaction();
+    // session.endSession();
     console.error("❌ Master upload error:", err);
     res.status(500).json({ 
       error: "MASTER_UPLOAD_FAILED", 
-      details: err.message 
+      details: err.message,
+      stack: err.stack
     });
   }
 };
@@ -902,7 +912,8 @@ export const getSchemes = async (req, res) => {
     res.json({
       success: true,
       data: rows,
-      total: rows.length,
+      total: schemes.length,  // ✅ DOCUMENT COUNT (199)
+      totalRows: rows.length, // SLAB COUNT (159) for pagination
       page,
       limit
     });

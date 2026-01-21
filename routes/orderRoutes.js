@@ -9,7 +9,8 @@ import {
   convertOrders,
   getOrderHistory,
   getOrderById,
-  checkSchemes
+  checkSchemes,
+  getProductSchemes
 } from "../controllers/orderController.js";
 
 import {
@@ -58,6 +59,9 @@ router.get("/:id/scheme-file", downloadSchemeFile);
 
 // Step 5: Preview
 router.get("/preview/:id", previewConvertedOrders);
+
+// Step 5b: Get schemes for specific product (Manual Mapping)
+router.get("/schemes/product/:productCode", getProductSchemes);
 
 // Step 6: Get single order (LAST – generic)
 router.get("/:id", getOrderById);

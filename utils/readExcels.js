@@ -71,3 +71,17 @@ export function readExcelSheets(buffer) {
 
   return result;
 }
+// Returns { sheetName: [ [row1col1, row1col2], ... ] } without header mapping
+export function readExcelMatrix(buffer) {
+  const wb = XLSX.read(buffer, { type: "buffer" });
+  const result = {};
+
+  wb.SheetNames.forEach(sheetName => {
+    const sheet = wb.Sheets[sheetName];
+    // Read as array of arrays
+    const rowsRaw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: null });
+    result[sheetName.toLowerCase()] = rowsRaw;
+  });
+
+  return result;
+}

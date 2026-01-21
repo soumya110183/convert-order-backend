@@ -16,6 +16,8 @@ import {
 
 } from "../../controllers/admin/masterDataController.js";
 
+import { getAdminDashboard } from "../../controllers/admin/adminController.js";
+
 
 
 const router = express.Router();
@@ -32,7 +34,7 @@ const upload = multer({
 /* MASTER DB */
 router.post("/upload", upload.single("file"), uploadMasterDatabase);
 router.get("/export", exportMasterDatabase);
-// router.get("/stats", getMasterStats);
+router.get("/dashboard", getAdminDashboard);  // ✅ ADDED
 
 /* CUSTOMERS */
 router.get("/customers", getCustomers);
