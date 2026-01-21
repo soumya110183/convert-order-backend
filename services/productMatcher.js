@@ -13,6 +13,36 @@ import { extractStrength, normalize } from "../utils/extractionUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
 import { normalizeProductName, normalizeForFuzzyMatch } from "../utils/productNormalizer.js";
 
+// 🔥 NEW: Common typos in medical product names
+const COMMON_TYPOS = {
+  'DRPS': 'DROPS',
+  'DRP': 'DROP',
+  'SUSP': 'SUSPENSION',
+  'SUSPN': 'SUSPENSION',
+  'TABS': 'TAB',
+  'CAPS': 'CAP',
+  'INJ': 'INJECTION',
+  'INJN': 'INJECTION',
+  'SYRUP': 'SYP',
+  'SIRP': 'SYP'
+};
+
+/**
+ * Fix common typos before matching
+ */
+function fixCommonTypos(text) {
+  if (!text) return text;
+  
+  let fixed = text.toUpperCase();
+  
+  Object.entries(COMMON_TYPOS).forEach(([typo, correct]) => {
+    const regex = new RegExp(`\\b${typo}\\b`, 'gi');
+    fixed = fixed.replace(regex, correct);
+  });
+  
+  return fixed;
+}
+
 
 function formAwareMatch(invoiceText, productName) {
   const FORMS = ['SPRAY','DROPS','CREAM','GEL','OINT','LOTION','SUSPENSION'];
@@ -343,9 +373,10 @@ export function matchProductSmart(invoiceDesc, products) {
 
 const rawInvoice = invoiceDesc;
 
-// 🔥 ENHANCED: Use productNormalizer for better normalization
+// 🔥 ENHANCED: Fix common typos first, then normalize
+const typoFixed = fixCommonTypos(invoiceDesc);
 const cleaned = normalizeProductName(
-  cleanInvoiceProduct(cleanInvoiceDesc(invoiceDesc))
+  cleanInvoiceProduct(cleanInvoiceDesc(typoFixed))
 );
 
 

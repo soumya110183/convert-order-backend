@@ -8,20 +8,42 @@
  *  - Manual confirmation fallback
  */
 
+/**
+ * Normalize customer name for matching
+ * Handles: dots, commas, spaces, case, business suffixes
+ * Example: "D.T.Associates" → "DT ASSOCIATES"
+ *          "S.R.I. SABARI & CO." → "SRI SABARI"
+ */
 function normalize(text = "") {
-  return text
-    .toUpperCase()
-    .toUpperCase()
-    .replace(/\./g, "") // 🔥 Fix: Remove dots (S.R.I -> SRI)
-    .replace(/['"]/g, "") // Remove quotes
-    .replace(/[^A-Z0-9 ]/g, " ") // Replace other symbols with space
-    .replace(/\b(PVT|LTD|LIMITED|PHARMA|PHARMACY|MEDICAL|DRUGS?|AGENCIES|TRADERS?|ENTERPRISES?|DISTRIBUTORS?|STORES?)\b/g, "")
-    .replace(/\s+/g, " ")
+  if (!text) return "";
+  
+  let normalized = text.toUpperCase();
+  
+  // STEP 1: Remove punctuation (but preserve word boundaries)
+  normalized = normalized
+    .replace(/[.,\-&()[\]{}'"]/g, " ")  // Replace with space
+    .replace(/\s+/g, " ")                // Compress spaces
     .trim();
+  
+  // STEP 2: Remove M/S prefix
+  normalized = normalized.replace(/^M\s*\/\s*S\s+/i, "");
+  normalized = normalized.replace(/^M\s+S\s+/i, "");
+  
+  // STEP 3: Remove location suffixes (only at end)
+  normalized = normalized.replace(/\s+(EKM|PKD|TVM|KKD|CALICUT|KANNUR|ERNAKULAM|KOCHI|KERALA)\s*$/i, "");
+  
+  // STEP 4: Remove trailing business structure words (only at end)
+  normalized = normalized.replace(/\s+(PVT\s+LTD|PRIVATE\s+LIMITED|LIMITED|LTD|LLP|LLC|INC|CORP|CORPORATION|CO)\s*$/i, "");
+  
+  // STEP 5: Clean up
+  normalized = normalized.replace(/\s+/g, " ").trim();
+  
+  return normalized;
 }
 
 /**
- * Simple but reliable similarity (0–1)
+ * Enhanced similarity with character-level fallback
+ * Handles word-based AND character-based matching
  */
 export function stringSimilarity(a = "", b = "") {
   if (!a || !b) return 0;
@@ -31,6 +53,7 @@ export function stringSimilarity(a = "", b = "") {
 
   if (s1 === s2) return 1;
 
+  // Word-based similarity
   const words1 = new Set(s1.split(" "));
   const words2 = new Set(s2.split(" "));
 
@@ -39,7 +62,17 @@ export function stringSimilarity(a = "", b = "") {
     if (words2.has(w)) common++;
   }
 
-  return common / Math.max(words1.size, words2.size);
+  const wordScore = common / Math.max(words1.size, words2.size);
+
+  // Character-level similarity (for spacing variations like "K K M" vs "KKM")
+  const c1 = s1.replace(/\s+/g, "");  // Remove all spaces
+  const c2 = s2.replace(/\s+/g, "");
+  
+  const charScore = (c1 === c2) ? 1.0 : 
+                    (c1.includes(c2) || c2.includes(c1)) ? 0.85 : 0;
+
+  // Return the best score
+  return Math.max(wordScore, charScore);
 }
 
 /**
@@ -82,8 +115,8 @@ export function matchCustomerSmart(invoiceCustomerName, customers = []) {
   const best = scored[0];
   const second = scored[1];
 
-  // 3️⃣ AUTO MATCH THRESHOLD
-  if (best && best.score >= 0.75 && (!second || best.score - second.score >= 0.15)) {
+  // 3️⃣ AUTO MATCH THRESHOLD (lowered for spacing variations)
+  if (best && best.score >= 0.70 && (!second || best.score - second.score >= 0.10)) {
     return {
       source: "FUZZY_AUTO",
       confidence: best.score,

@@ -77,6 +77,13 @@ export function detectCustomerFromInvoice(rows = []) {
     // Skip lines that are too short or too long
     if (line.length < 8 || line.length > 120) continue;
     
+    // 🔥 CRITICAL: Check for address BEFORE checking business keywords
+    // This prevents "Pharmaceutical Distributors, 11/267(5),tailor Street" from being detected
+    if (isAddressLine(line)) {
+      console.log(`⛔ Skipping address line: "${line.substring(0, 60)}..."`);
+      continue;
+    }
+    
     // Count business keywords in this line
     const keywordCount = BUSINESS_KEYWORDS.filter(kw => 
       new RegExp(`\\b${kw}\\b`, 'i').test(line)
@@ -161,6 +168,49 @@ export function detectCustomerFromInvoice(rows = []) {
 
   console.log('⚠️ No customer detected in invoice');
   return null;
+}
+
+/**
+ * Detect if a line is an address (not a customer name)
+ */
+function isAddressLine(text) {
+  if (!text) return false;
+  
+  const upper = text.toUpperCase();
+  
+  // Address indicators:
+  // 1. Street numbers: 11/267(5), 41/685, 17/252/8/3
+  const hasStreetNumber = /\b\d+\/\d+/.test(text);
+  
+  // 2. Street keywords
+  const hasStreetKeyword = /\b(STREET|ROAD|AVENUE|LANE|BUILDING|FLOOR|NEAR|OPPOSITE|OPP\.|JUNCTION|CIRCLE|MAIN\s+ROAD|CROSS|LAYOUT)\b/i.test(upper);
+  
+  // 3. Parentheses with numbers (often indicates building/plot numbers)
+  const hasPlotNumber = /\(\d+\)/.test(text);
+  
+  // 4. "NEW NO" or "OLD NO" patterns
+  const hasNewOldNo = /\b(NEW\s+NO|OLD\s+NO|NO\.?\s*\d+)\b/i.test(upper);
+  
+  // 5. Starts with address field label
+  const startsWithAddress = /^(ADDRESS|ADDR\.|LOCATION|AT:|NEAR)/i.test(upper);
+  
+  // If it has multiple address indicators, it's definitely an address
+  const indicators = [
+    hasStreetNumber,
+    hasStreetKeyword,
+    hasPlotNumber,
+    hasNewOldNo,
+    startsWithAddress
+  ].filter(Boolean).length;
+  
+  // 2 or more indicators = address line
+  if (indicators >= 2) return true;
+  
+  // Single strong indicator is also enough
+  if (startsWithAddress) return true;
+  if (hasStreetNumber && hasStreetKeyword) return true;
+  
+  return false;
 }
 
 /**

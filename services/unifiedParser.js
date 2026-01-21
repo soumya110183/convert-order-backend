@@ -4,6 +4,7 @@ import XLSX from "xlsx-js-style";
 import { extractTextFromPDFAdvanced } from "./pdfParser.js";
 import { detectCustomerFromInvoice } from "./customerDetector.js";
 import { mergePDFRowsTableAware } from "../utils/tableAwareMerging.js";
+import { normalizeProductName } from "../utils/productNormalizer.js";
 
 /* =====================================================
    CONFIGURATION
@@ -37,6 +38,7 @@ const HARD_JUNK_PATTERNS = [
   /^(PAGE|PRINTED\s*BY|SIGNATURE|PREPARED\s*BY|CHECKED\s*BY)/i,
   /^(GSTIN|DL\s*NO|FSSAI|LICENSE\s*NO)/i,
   /^(PIN\s*CODE|PHONE|EMAIL|FAX)/i,
+  /^(NOTE|REMARK|COMMENT|KINDLY|PLEASE|REQUEST)[\s:]/i,  // 🔥 NEW: Skip note fields
   /^-+$/,
   /^_+$/,
   /^=+$/,
@@ -55,6 +57,11 @@ const INVALID_PRODUCT_PATTERNS = [
   /^TAB\s*\d+$/i,
   /^CAP\s*\d+$/i,
   /^SYP\s*\d+$/i,
+  /^SEND\s+/i,           // 🔥 NEW: "SEND UMBRELLA"
+  /^KINDLY\s+/i,         // 🔥 NEW: "KINDLY SEND"
+  /^PLEASE\s+/i,         // 🔥 NEW: "PLEASE PROVIDE"
+  /^NOTE[\s:]/i,         // 🔥 NEW: "NOTE:"
+  /^REMARK[\s:]/i,       // 🔥 NEW: "REMARK:"
   /^\d+\s*TAB$/i,
   /^\d+\s*CAP$/i,
   /^[A-Z]{1,2}\s*\d+$/,
@@ -106,7 +113,7 @@ const NOT_PRODUCT_PATTERNS = [
 ];
 
 function looksLikeProduct(text, strict = true) {
-  if (!text || text.length < 5) return false;
+  if (!text || text.length < 3) return false;  // 🔥 LOWERED from 5 to 3
 
   const upper = text.toUpperCase();
 
@@ -115,10 +122,37 @@ function looksLikeProduct(text, strict = true) {
   if (isHardJunk(upper)) return false;
 
   // ❌ Reject GST / PAN / Codes
-  if (/^[0-9A-Z]{10,15}$/.test(upper.replace(/\s/g, ""))) return false;
+  // GST is 15 chars, PAN is 10. Usually mixed strict pattern.
+  // Avoid blocking "NITROFIX 30SR" (12 chars) by ensuring it LOOKS like a code
+  const spaceless = upper.replace(/\s/g, "");
+  // True GST: 2 digits + 5 letters + 4 digits + 1 letter + 1 digit + 1 letter/digit
+  // Simple check: mostly mixed, no meaningful words
+  if (/^[0-9A-Z]{10,15}$/.test(spaceless)) {
+     // If it has decent length words, it's likely a product, not a code
+     const words = text.split(/\s+/);
+     const maxWordLen = Math.max(...words.map(w => w.length));
+     // If it has a word > 4 chars that is purely letters, it is PROBABLY a product (NITROFIX)
+     // Codes usually don't have long dictionary-like words
+     const hasLongWord = words.some(w => /^[A-Z]{4,}$/i.test(w));
+     
+     if (!hasLongWord && /\d/.test(spaceless) && /[A-Z]/.test(spaceless)) {
+       return false; // Valid code
+     }
+  }
+
+  // 🔥 PRIORITY: Table row detection (works even without form words)
+  // Pattern: "2 218038 NITROFIX 30SR 10,S 10 1957.50 50"
+  const tokens = text.trim().split(/\s+/);
+  if (tokens.length >= 5 && /^\d{1,2}$/.test(tokens[0]) && /^\d{3,6}$/.test(tokens[1])) {
+    const serialNum = Number(tokens[0]);
+    if (serialNum >= 1 && serialNum <= 99 && /\d+\.\d{2}/.test(text) && /[A-Z]{3,}/i.test(text)) {
+      debug(`  ✅ [TABLE] Row ${serialNum}, Code ${tokens[1]}`);
+      return true;
+    }
+  }
 
   // ✅ MUST contain medicine identity
-  const hasForm = /\b(TAB|TABLET|CAP|CAPSULE|CAPS|INJ|SYRUP|SYP|DROPS|CREAM|GEL|OINT|VIAL|AMP)\b/i.test(upper);
+  const hasForm = /\b(TAB|TABLET|CAP|CAPSULE|CAPS|INJ|SYRUP|SYP|DROPS|DRPS|CREAM|GEL|OINT|VIAL|AMP)\b/i.test(upper);
   const hasStrength = /\b\d+\s*(MG|ML|MCG|IU|GM)\b/i.test(upper);
   const hasPack = /\d+['"`]S\b/i.test(upper);
 
@@ -138,7 +172,7 @@ function looksLikeProduct(text, strict = true) {
  * Uses structural patterns and context
  */
 function looksLikeProductRelaxed(text) {
-  if (!text || text.length < 5) return false;
+  if (!text || text.length < 3) return false;
 
   const upper = text.toUpperCase();
 
@@ -164,6 +198,15 @@ function looksLikeProductRelaxed(text) {
   // ❌ Reject if too short or too long
   const words = upper.split(/\s+/).filter(w => w.length > 0);
   if (words.length < 2 || words.length > 15) return false;
+
+  // ✅ Pattern 2: Pure uppercase brand name (e.g. "AVAS", "ANGIZAAR", "VILDAPRIDE M")
+  // Must be significant length (3+) and look like a name
+  if (/^[A-Z0-9\s\-]+$/.test(upper)) {
+     const clean = upper.replace(/\s+/g, "");
+     // Must have at least 3 letters
+     const letters = clean.replace(/[^A-Z]/g, "").length;
+     if (letters >= 3) return true;
+  }
 
   // ❌ Reject if no numbers at all (products usually have codes, strengths, or packs)
   if (!/\d/.test(upper)) return false;
@@ -219,14 +262,15 @@ function extractQuantityFromQtyLine(text) {
 
     const val = Number(token);
 
-
-    //  CRITICAL: BLOCK SAP CODES (1000-9999) in fallback too
-    if (val >= 1000 && val <= 9999) {
-      console.log(`  [FALLBACK BLOCKED] SAP code: ${val}`);
+    // 🔥 FIXED: Only block SAP codes if they're at the START (position 0)
+    // This allows actual quantities like 3600 to be extracted
+    if (i === 0 && val >= 1000 && val <= 9999) {
+      console.log(`  [QTY_LINE BLOCKED] Leading SAP code: ${val}`);
       continue;
     }
-    // Guardrails
-    if (val >= 1 && val <= 5000) {
+    
+    // Guardrails: Allow quantities up to 99999
+    if (val >= 1 && val <= 99999) {
       debug(`  [QTY_COL] Found qty: ${val}`);
       return val;
     }
@@ -254,7 +298,7 @@ function extractQuantityOriginal(text) {
   // Smart integer detection
   let cleaned = text
     .replace(/\b\d{6,}\b/g, " ")
-    .replace(/\d+\.\d+(?!\s*(MG|ML|MCG|GM|G|IU))/gi, " ")
+    .replace(/\d{3,}\.\d+/g, " ")  // Only remove large decimals like 123.45, not 2.5
     .replace(/\+\s*\d*\s*(FREE|F)\s*$/i, '');
   
   cleaned = cleaned.replace(/\s+/g, " ").trim();
@@ -431,15 +475,21 @@ function extractQuantityFromMergedLine(text) {
     // 🚫 BLOCK strength patterns (500MG, 20ML, etc.)
     if (/^(MG|ML|MCG|GM|G|IU|KG|TAB|CAP|TABS|CAPS|INJ|SYP)$/i.test(next)) continue;
     
-    // ❌ PRODUCTION FIX: BLOCK ALL SAP CODES (1000-9999)
-    if (val >= 1000 && val <= 9999) {
-      console.log(`  [BLOCKED] SAP code: ${val}`);
+    // 🔥 FIXED: Only block SAP codes at position 0, not everywhere
+    if (i === 0 && val >= 1000 && val <= 9999) {
+      console.log(`  [BLOCKED] Leading SAP code: ${val}`);
       continue;
     }
     
     // ❌ BLOCK serial numbers at start
     if (i === 0 && val < 100) {
       console.log(`  [BLOCKED] Serial number: ${val}`);
+      continue;
+    }
+    
+    // 🔥 NEW: Skip single-digit serial numbers in early positions  
+    if (i <= 5 && val < 10) {
+      console.log(`  [BLOCKED] Single-digit serial: ${val} at position ${i}`);
       continue;
     }
 
@@ -450,9 +500,9 @@ function extractQuantityFromMergedLine(text) {
        continue;
     }
 
-    // ✅ Valid quantity: 1-999 or 10000+
+    // ✅ Valid quantity: 1-99999 (increased range)
     // Return FIRST valid quantity found (closest to amount)
-    if ((val >= 1 && val < 1000) || val >= 10000) {
+    if (val >= 1 && val <= 99999) {
       console.log(`  [MERGED_QTY] Found ${val} at position ${i}`);
       return val;
     }
@@ -542,31 +592,46 @@ export function extractProductName(text, qty) {
     // Keep everything up to and including the form word
     t = t.substring(0, formIndex + formWord.length);
   } else {
-    // No form word found, try to clean manually
+    // No form word - extract from table row
+    // Pattern: "NITROFIX 30SR 10,S 10 1957.50 50"
     
-    // Remove quantity and everything after
+    // Remove quantity if known
     if (qty) {
-      const qtyPattern = new RegExp(`\\b${qty}\\b.*$`);
-      t = t.replace(qtyPattern, "");
+      t = t.replace(new RegExp(`\\b${qty}\\b.*$`), "");
     }
     
-    // Remove trailing pack patterns
-    t = t.replace(/\s+\d+X\d+[A-Z]?\s*$/i, "");
-    t = t.replace(/\s+\d+['`"]?S\s*$/i, "");
+    // Remove prices and large numbers
+    // Remove prices (only large amounts or specific price formats like 1957.50)
+    // BE CAREFUL: Don't remove small dosage decimals like 2.5 or 0.25
+    t = t.replace(/\s*\d{3,}\.\d{2}.*$/," ");  // Remove clear prices (100.00+)
+    t = t.replace(/\s+\d{3,}\s*$/g, "");       // Remove trailing large numbers
     
-    // Remove trailing prices/numbers
-    t = t.replace(/\s*\d+\.\d{2}\s*$/, "");
-    t = t.replace(/\s+\d{3,}\s*$/, "");
+    // Remove pack patterns
+    t = t.replace(/\s+\d+X\d+[A-Z]?\s*$/gi, "");
+    t = t.replace(/\s+\d+['`"]?S\s*$/gi, "");
+    t = t.replace(/\s+\d{1,2},S\s*$/gi, "");  // Remove "10,S" pattern
     
-    // Clean up merged patterns at end
-    t = t.replace(/([A-Z]{2,})(\d+X\d+[A-Z]?)$/gi, '$1');
-    t = t.replace(/([A-Z]{2,})(\d+['`"]?S)$/gi, '$1');
-    t = t.replace(/([A-Z]{2,})(\d{3,})$/g, '$1');
+    // Remove trailing small numbers (30, 10, 20, etc - likely quantity)
+    t = t.replace(/\s+\d{1,2}\s*$/g, "");
+    
+    // Get first meaningful words (product name)
+    const words = t.trim().split(/\s+/);
+    const productWords = [];
+    for (const w of words) {
+      if (/[A-Z]/i.test(w) || /^\d+$/.test(w)) {
+        productWords.push(w);
+        if (productWords.length >= 5) break;  // Limit to 5 words
+      }
+    }
+    t = productWords.join(" ");
   }
 
-  return t
+  // 🔥 STEP 5: Normalize form words (TABLET→TAB, CAPSULE→CAP, etc.)
+  const cleaned = t
     .replace(/\s+/g, " ")
     .trim();
+  
+  return normalizeProductName(cleaned);
 }
 
 
@@ -747,12 +812,16 @@ async function parsePDF(file) {
     // ✅ DO NOT DROP PRODUCT IF QTY IS MISSING
     const itemDesc = extractProductName(text, qty);
 
-    if (!itemDesc || itemDesc.length < 5) {
+    if (!itemDesc || itemDesc.length < 3) {
+      console.log(`  ❌ Row ${i + 1} FAILED: Name too short/empty: "${itemDesc}"`);
       failed.push({ row: i + 1, text, reason: "Invalid product name" });
       continue;
     }
 
-    if (!looksLikeProduct(itemDesc, true)) {
+    // 🔥 FIXED: Use RELAXED validation for extracted names
+    // "NITROFIX 30SR" might not have TAB/MG but is a valid product
+    if (!looksLikeProduct(itemDesc, false)) {
+      console.log(`  ❌ Row ${i + 1} FAILED: Validation failed for "${itemDesc}"`);
       failed.push({ row: i + 1, text, reason: "Not product-like" });
       continue;
     }

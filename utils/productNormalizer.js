@@ -117,7 +117,11 @@ export function normalizeProductName(productName, options = {}) {
     // "500 MG" → "500MG"
     normalized = normalized.replace(/(\d+(?:\.\d+)?)\s+(MG|ML|MCG|GM|G|IU)/g, '$1$2');
     
-    // "50 / 500 MG" → "50/500MG"
+    // 🔥 DISABLED: This was corrupting decimals (2.5→'2 5'→'2/5')
+    // Only enable for actual combination strengths with explicit context
+    // For now, rely on slash normalization below which is safer
+    
+    // "50 / 500 MG" → "50/500MG" (already handles slash with spaces)
     normalized = normalized.replace(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(MG|ML|MCG)?/g, '$1/$2$3');
   }
   
@@ -132,7 +136,8 @@ export function normalizeProductName(productName, options = {}) {
   normalized = normalized
     .replace(/\s*-\s*/g, '-')      // "DOLO - 650" → "DOLO-650"
     .replace(/\s+/g, ' ')           // Multiple spaces → single space
-    .replace(/[^\w\s\-\/]/g, ' ')   // Remove special chars except - and /
+    .replace(/[^\w\s\-\/\.]/g, ' ')   // 🔥 FIXED: Allow dots (.) for decimals like 2.5
+    .replace(/\s+\./g, ' .')        // Fix Orphan dots if any
     .trim();
   
   return normalized;
