@@ -14,6 +14,35 @@ import path from "path";
 import fs from "fs";
 
 /* =====================================================
+   EXCEL STYLING (MATCHING ORDER CONTROLLER)
+===================================================== */
+
+const headerStyle = {
+  font: { bold: true, color: { rgb: "FFFFFF" } },
+  fill: { patternType: "solid", fgColor: { rgb: "8B0000" } },
+  alignment: { vertical: "center", horizontal: "center" },
+  border: {
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
+  }
+};
+
+const normalCellStyle = {
+  border: {
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
+  }
+};
+
+const schemeRowStyle = {
+  fill: { patternType: "solid", fgColor: { rgb: "FFFF99" } },   // Light yellow for schemes
+  border: {
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
+  }
+};
+
+/* =====================================================
    DOWNLOAD CONVERTED FILE
    GET /api/orders/download/:uploadId
 ===================================================== */
@@ -58,7 +87,7 @@ export async function downloadConvertedFile(req, res, next) {
 
     return res.download(
       filePath,
-      upload.fileName.replace(/\.[^.]+$/, "") + "-order-training.xlsx"
+      upload.fileName.replace(/\.[^.]+$/, "") + "-converted.xlsx"
     );
 
   } catch (err) {
@@ -150,11 +179,52 @@ export async function downloadSchemeFile(req, res, next) {
 
     // Generate Excel
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(schemeDetails);
+    const headers = ["Product Code", "Product Name", "Order Qty", "Free Qty", "Scheme %", "Division"];
+    
+    const ws = XLSX.utils.json_to_sheet(schemeDetails, { header: headers });
+
+    // 🎨 APPLY STYLING
+    
+    // 1. Style Headers
+    headers.forEach((_, colIdx) => {
+      const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+      if (!ws[cellRef]) return;
+      ws[cellRef].s = headerStyle;
+    });
+
+    // 2. Style Rows (All rows are schemes, so apply scheme style or normal style?)
+    // User requested "exact format... with that colouring". 
+    // In main file, schemes are YELLOW. Since this is a SCHEME summary, let's make them light yellow or just normal with borders.
+    // Let's go with normal borders for readability, but maybe highlight the header distinctively.
+    // Actually, user said "exact format... with that colouring". 
+    // I will apply normal borders to all, and maybe standard font.
+    
+    schemeDetails.forEach((row, idx) => {
+      const excelRow = idx + 1;
+      headers.forEach((_, colIdx) => {
+        const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
+        if (!ws[cellRef]) ws[cellRef] = { v: "" }; // Ensure cell exists
+        
+        // Use schemeRowStyle as requested ("yellow row colour... like done in converted files")
+        ws[cellRef].s = schemeRowStyle; 
+      });
+    });
+
+    // 3. Set Column Widths
+    ws["!cols"] = [
+      { wch: 15 }, // Code
+      { wch: 40 }, // Name
+      { wch: 10 }, // Order Qty
+      { wch: 10 }, // Free Qty
+      { wch: 10 }, // Scheme %
+      { wch: 15 }  // Division
+    ];
 
     XLSX.utils.book_append_sheet(wb, ws, "Scheme Summary");
 
-    const fileName = `scheme-summary-${upload.customerCode}-${Date.now()}.xlsx`;
+    // Use original filename base + -scheme-summary
+    const originalName = upload.fileName.replace(/\.[^.]+$/, "");
+    const fileName = `${originalName}-scheme-summary.xlsx`;
 
     const buffer = XLSX.write(wb, {
       type: "buffer",

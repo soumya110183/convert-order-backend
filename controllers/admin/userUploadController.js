@@ -115,7 +115,7 @@ export async function processInvoice(req, res, next) {
     /* ---------- Send file ---------- */
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="order-training-${Date.now()}.xlsx"`
+      `attachment; filename="${req.file.originalname.replace(/\.[^.]+$/, "")}-converted.xlsx"`
     );
     res.setHeader(
       "Content-Type",
