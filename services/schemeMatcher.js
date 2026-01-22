@@ -1,7 +1,9 @@
-// services/schemeMatcher.js
+// services/schemeMatcher.js - FIXED FOR PROPORTIONAL SCALING
 
 function normalize(text = "") {
-  return String(text).toUpperCase().trim();
+  return String(text).toUpperCase().trim()
+    .replace(/[-_/]/g, " ")  ;
+  
 }
 
 /**
@@ -24,23 +26,17 @@ function findApplicableScheme(schemes, productCode, itemDesc, customerCode, divi
 
     // 2. Check Customer Restriction (if defined)
     if (s.applicableCustomers && s.applicableCustomers.length > 0) {
-      // If scheme lists customers, ours MUST be in the list
       if (!s.applicableCustomers.includes(normalizedCust)) {
         return false;
       }
     }
 
-    // 3. Check Division (Optional but preferred)
+    // 3. Check Division (Optional)
     if (s.division && normalizedDiv) {
         const schemeDiv = normalize(s.division);
-        // Relaxed match: Allow if one includes the other (CARDI-CARE vs CAR3 is hard)
-        // BUT strict product code match is usually sufficient.
-        // Let's only fail if they are COMPLETELY different and length is significant
-        // Actually, for now, if Product Code matches, we should trust it. 
-        // Division in Scheme Master is often descriptive.
-        
-        // Only check if Product Code is NOT present (name-only match)
-        if (!codeMatch && schemeDiv !== normalizedDiv && !schemeDiv.includes(normalizedDiv) && !normalizedDiv.includes(schemeDiv)) {
+        if (!codeMatch && schemeDiv !== normalizedDiv && 
+            !schemeDiv.includes(normalizedDiv) && 
+            !normalizedDiv.includes(schemeDiv)) {
              return false;
         }
     }
@@ -49,6 +45,20 @@ function findApplicableScheme(schemes, productCode, itemDesc, customerCode, divi
   });
 }
 
+/**
+ * ✅ PROPORTIONAL SCHEME APPLICATION
+ * 
+ * Logic:
+ * 1. Find the BASE slab (smallest minQty)
+ * 2. Calculate multiplier = floor(orderQty / baseSlab.minQty)
+ * 3. Free qty = multiplier × baseSlab.freeQty
+ * 
+ * Example:
+ * - Base slab: 100+20
+ * - Order: 300
+ * - Multiplier: 3
+ * - Free: 3 × 20 = 60
+ */
 export function applyScheme({ productCode, orderQty, itemDesc, division, customerCode, schemes }) {
   const scheme = findApplicableScheme(schemes, productCode, itemDesc, customerCode, division);
 
@@ -56,84 +66,157 @@ export function applyScheme({ productCode, orderQty, itemDesc, division, custome
     return { schemeApplied: false };
   }
 
-  // Find best qualifying slab
-  // Sort descending by minQty so we get the highest applicable slab
-  const eligibleSlab = scheme.slabs
-    .filter(s => orderQty >= s.minQty)
-    .sort((a, b) => b.minQty - a.minQty)[0];
+  // ✅ FIND BASE SLAB (smallest minQty)
+  const baseSlab = scheme.slabs
+    .filter(s => s.minQty > 0)
+    .sort((a, b) => a.minQty - b.minQty)[0];
 
-  if (!eligibleSlab) {
+  if (!baseSlab) {
     return { schemeApplied: false };
   }
 
-  const freeQty = eligibleSlab.freeQty;
+  // ✅ CHECK IF ORDER QUALIFIES (must meet base slab minimum)
+  if (orderQty < baseSlab.minQty) {
+    return { 
+      schemeApplied: false,
+      reason: 'ORDER_BELOW_MINIMUM',
+      minimumQty: baseSlab.minQty
+    };
+  }
 
-  const schemePercent =
-    orderQty > 0 && freeQty > 0
-      ? Number(((freeQty / orderQty) * 100).toFixed(2))
-      : 0;
+  // ✅ CALCULATE MULTIPLIER (how many times the base slab fits)
+  const multiplier = Math.floor(orderQty / baseSlab.minQty);
+  
+  // ✅ PROPORTIONAL FREE QUANTITY
+  const totalFreeQty = multiplier * (baseSlab.freeQty || 0);
+
+  // ✅ CALCULATE ACTUAL SCHEME PERCENT
+  const schemePercent = orderQty > 0 && totalFreeQty > 0
+    ? Number(((totalFreeQty / orderQty) * 100).toFixed(2))
+    : (baseSlab.schemePercent * 100 || 0);
 
   return {
     schemeApplied: true,
-    freeQty,
-    schemePercent,
-    appliedSlab: eligibleSlab,
+    freeQty: totalFreeQty,
+    schemePercent: schemePercent / 100, // Convert back to decimal
+    appliedSlab: baseSlab,
+    multiplier,
+    baseRatio: {
+      minQty: baseSlab.minQty,
+      freeQty: baseSlab.freeQty
+    },
+    calculation: `${orderQty} ÷ ${baseSlab.minQty} = ${multiplier} × ${baseSlab.freeQty} = ${totalFreeQty} free`,
     availableSlabs: scheme.slabs,
-    schemeName: scheme.schemeName // might be useful
+    schemeName: scheme.schemeName
   };
 }
 
 
 /**
- * Find better scheme opportunities
- * e.g. If Qty=80 and Scheme starts at 100, suggest 100
+ * ✅ UPSELL SUGGESTION (Next Multiple)
+ * 
+ * Example:
+ * - Base slab: 100+20
+ * - Order: 280
+ * - Current multiplier: 2 (gets 40 free)
+ * - Suggest: Order 300 (3× multiplier) to get 60 free
  */
 export function findUpsellOpportunity({ productCode, orderQty, itemDesc, division, customerCode, schemes }) {
   const scheme = findApplicableScheme(schemes, productCode, itemDesc, customerCode, division);
 
   if (!scheme || !scheme.slabs?.length) return null;
 
-  // Find slabs that are explicitly GREATER than current qty
-  const potentialSlabs = scheme.slabs
-    .filter(s => s.minQty > orderQty)
-    .sort((a, b) => a.minQty - b.minQty); // Smallest upgrade first
-
-  if (potentialSlabs.length === 0) return null;
-
-  const nextSlab = potentialSlabs[0];
-  const diff = nextSlab.minQty - orderQty;
-
-  // Heuristic: Suggest if difference is within 50% of current qty OR absolute diff is reasonably small
-  // "80 -> 100" is +25%.
-  const percentDiff = (diff / orderQty) * 100;
+  // Find base slab
+  const baseSlab = scheme.slabs
+    .filter(s => s.minQty > 0)
+    .sort((a, b) => a.minQty - b.minQty)[0];
   
-  if (percentDiff <= 50 || diff <= 50) {
+  if (!baseSlab || baseSlab.minQty <= 0) return null;
+
+  // Current multiplier
+  const currentMultiplier = Math.floor(orderQty / baseSlab.minQty);
+  
+  // Target next multiplier
+  const targetMultiplier = currentMultiplier + 1;
+  const targetQty = targetMultiplier * baseSlab.minQty;
+  const diff = targetQty - orderQty;
+
+  // Only suggest if difference is reasonable (within 60% of base slab)
+  const threshold = baseSlab.minQty * 0.6;
+  
+  if (diff > 0 && diff <= threshold) {
+      const currentFreeQty = currentMultiplier * (baseSlab.freeQty || 0);
+      const potentialFreeQty = targetMultiplier * (baseSlab.freeQty || 0);
+      const additionalFree = potentialFreeQty - currentFreeQty;
+      
       return {
           productCode,
           currentQty: orderQty,
-          suggestedQty: nextSlab.minQty,
-          freeQty: nextSlab.freeQty,
-          diff: diff,
-          schemePercent: nextSlab.schemePercent,
-          schemeName: scheme.schemeName || "Scheme"
+          currentFreeQty,
+          suggestedQty: targetQty,
+          addQty: diff,
+          potentialFreeQty,
+          additionalFree,
+          schemePercent: baseSlab.schemePercent,
+          schemeName: scheme.schemeName || "Scheme",
+          message: `Add ${diff} more to get ${additionalFree} additional free (total: ${potentialFreeQty} free)`
       };
   }
 
   return null;
 }
 
+/**
+ * Get all available schemes for a product
+ */
 export function getSchemesForProduct({ productCode, customerCode, division, schemes }) {
     const scheme = findApplicableScheme(schemes, productCode, "", customerCode, division);
     
     if(!scheme || !scheme.slabs?.length) return [];
 
-    return scheme.slabs.map(slab => ({
-        ...slab,
-        schemeName: scheme.schemeName || "Scheme",
-        productCode: scheme.productCode,
-        minQty: slab.minQty,
-        freeQty: slab.freeQty,
-        schemePercent: slab.schemePercent
-    })).sort((a,b) => a.minQty - b.minQty); // Sort by min qty ascending
+    // Sort slabs by minQty and return
+    return scheme.slabs
+        .map(slab => ({
+            ...slab,
+            schemeName: scheme.schemeName || "Scheme",
+            productCode: scheme.productCode,
+            minQty: slab.minQty,
+            freeQty: slab.freeQty,
+            schemePercent: slab.schemePercent
+        }))
+        .sort((a, b) => a.minQty - b.minQty);
 }
 
+/**
+ * ✅ NEW: Calculate exact free quantity for any given order quantity
+ * Useful for frontend calculators
+ */
+export function calculateFreeQty({ productCode, orderQty, division, customerCode, schemes }) {
+    const result = applyScheme({
+        productCode,
+        orderQty,
+        itemDesc: "",
+        division,
+        customerCode,
+        schemes
+    });
+
+    if (!result.schemeApplied) {
+        return {
+            success: false,
+            freeQty: 0,
+            message: result.reason === 'ORDER_BELOW_MINIMUM' 
+                ? `Minimum order: ${result.minimumQty}` 
+                : 'No scheme available'
+        };
+    }
+
+    return {
+        success: true,
+        orderQty,
+        freeQty: result.freeQty,
+        multiplier: result.multiplier,
+        baseRatio: result.baseRatio,
+        calculation: result.calculation
+    };
+}

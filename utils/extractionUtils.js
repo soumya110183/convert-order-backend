@@ -66,6 +66,7 @@ export function extractStrength(text) {
 
 /**
  * Normalize strength for comparison
+ * UPDATED: Removes units (MG/ML/MCG) for unit-agnostic matching
  */
 export function normalizeStrength(strength = "") {
   if (!strength) return "";
@@ -75,16 +76,15 @@ export function normalizeStrength(strength = "") {
     .replace(/\s+/g, "")
     .trim();
 
-  // Add MG if only number
-  if (/^\d+(?:\.\d+)?$/.test(s) && VALID_STRENGTHS.has(s)) {
-    s += "MG";
-  }
-
-  // Normalize units
+  // Normalize long-form units to short form first
   s = s
     .replace(/MILLIGRAMS?/g, "MG")
     .replace(/GRAMS?/g, "G")
     .replace(/MILLILITERS?/g, "ML");
+
+  // 🔥 CRITICAL: Remove all units for unit-agnostic matching
+  // This allows "1500MG" to match "1500" and vice versa
+  s = s.replace(/(MG|ML|MCG|GM|G|IU|KG)\b/gi, "");
 
   return s;
 }

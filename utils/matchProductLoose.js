@@ -9,6 +9,7 @@ function normalize(text = "") {
     .replace(/['"*]/g, "")
     .replace(/[^A-Z0-9 ]/g, " ")
     .replace(/\s+/g, " ")
+      .replace(/[-_/]/g, " ")  
     .trim();
 }
 

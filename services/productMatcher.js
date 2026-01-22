@@ -162,11 +162,14 @@ function normalizeStrength(strength = "") {
 
   return strength
     .toUpperCase()
+    // Remove all spaces first
     .replace(/\s+/g, "")
-    // Normalize combo units safely
-    .replace(/(\d+(?:\.\d+)?)MG/g, "$1")
-    .replace(/(\d+(?:\.\d+)?)ML/g, "$1")
+    // Normalize combo units - remove MG, ML, MCG, GM, G after numbers
+    .replace(/(\d+(?:\.\d+)?)(MG|ML|MCG|GM|G)\b/gi, "$1")
+    // Normalize multiple slashes to single slash
     .replace(/\/+/g, "/")
+    // Remove any remaining spaces
+    .replace(/\s+/g, "")
     .trim();
 }
 
@@ -225,10 +228,15 @@ function hasCompatibleVariant(invoiceText, productName) {
 function exactMatch(invoiceText, product) {
   if (!invoiceText || !product?.productName) return 0;
 
+  // Enhanced normalization that removes units (MG, ML, MCG) before comparing
   const normalize = (text) => {
     return text
       .toUpperCase()
-      .replace(/[^A-Z0-9]/g, "")
+      .replace(/[-_/]/g, " ")  
+      // Remove units first
+      .replace(/(\d+(?:\.\d+)?)\s*(MG|ML|MCG|GM|G)\b/gi, '$1')
+      // Remove all non-alphanumeric except forward slash (for combo strengths)
+      .replace(/[^A-Z0-9\/]/g, "")
       .trim();
   };
 
@@ -242,8 +250,8 @@ function exactMatch(invoiceText, product) {
   if (inv.includes(prod) || prod.includes(inv)) {
     const lenDiff = Math.abs(inv.length - prod.length);
     
-    // If difference is small (just form word), consider it exact
-    if (lenDiff <= 4) { // "TABS" = 4 chars
+    // If difference is small (just form word or unit), consider it exact
+    if (lenDiff <= 4) { // "TABS" = 4 chars, "MG" = 2 chars
       return 1.0;
     }
     
@@ -265,7 +273,10 @@ function similarity(str1, str2) {
   const normalize = (s) => {
     return s
       .toUpperCase()
-      .replace(/[^A-Z0-9 ]/g, " ")
+      // Remove units (MG, ML, MCG) from numbers
+      .replace(/(\d+(?:\.\d+)?)\s*(MG|ML|MCG|GM|G)\b/gi, '$1')
+      // Replace non-alphanumeric (except slash) with space
+      .replace(/[^A-Z0-9\/]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
   };

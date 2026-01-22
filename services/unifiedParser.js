@@ -686,11 +686,17 @@ export function extractProductName(text, qty) {
     t = productWords.join(" ");
   }
 
-  // ✅ NEW: Apply global cleaning (Remove TABS, CAPS, MG, ML, etc)
+  // ✅ NEW: Apply global cleaning
+  // Don't strip form words (TABS etc) - let normalizeProductName handle them
+  // Remove units (MG/ML) but keep number
   t = t
     .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT)\b/gi, "")
+    .replace(/(\d+)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1")
+    .replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // Remove standalone units
     .replace(/\b(\d+)\s*['`"]?S\b/gi, "")
-    .replace(/\b(MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // 🔥 Remove units
+    // Fix dot packs in Text Mode (e.g. "TAB.15" -> "TAB")
+    .replace(/([^0-9])\s*\.\d+[\.\s]*$/g, "$1")
+    .replace(/\.\s*\d+[\.\s]*$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
@@ -1137,8 +1143,40 @@ function cleanExtractedProductName(raw = "") {
   // Step 6: Remove "SUSP." but keep other abbreviations
   cleaned = cleaned.replace(/\bSUSP\./gi, "SUSPENSION");
   cleaned = cleaned.replace(/\bSYP\./gi, "SYRUP");
+
+  // Step 6b: Remove standard pack patterns (15S, 1X10)
+  cleaned = cleaned.replace(/\b\d+\s*['"`]?\s*S\b/gi, "");
+  cleaned = cleaned.replace(/\b\d+X\d+[A-Z]?\b/gi, "");
+
+  // Step 6c: Remove units (MG, ML, etc) but keep number
+  cleaned = cleaned.replace(/(\d+)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1");
+  // Step 6d: Remove standalone units (e.g. "MOXILONG MG")
+  cleaned = cleaned.replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "");
+
+  // Step 6e: Remove Form words (TABS, CAPS...)
+  cleaned = cleaned.replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT)\b/gi, "");
+
+  // Step 7: Remove trailing pack details
+  // Case A: Dot followed by space and digits (e.g. "80MG. 10") or just dots
+  cleaned = cleaned.replace(/\.\s*\d+[\.\s]*$/g, "");
   
-  // Step 7: Normalize spacing
+  // Case B: Dot followed by digits, NOT preceded by digit
+  cleaned = cleaned.replace(/([^0-9])\s*\.\d+[\.\s]*$/g, "$1");
+  
+  // Clean trailing punctuation
+  cleaned = cleaned.replace(/[\.\s]+$/, "");
+
+  // Case D: Double number heuristic (e.g. "50 15" -> "50", "2.5 15" -> "2.5")
+  cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s+(\d+)$/, (match, p1, p2) => {
+      const n2 = parseInt(p2, 10);
+      if (n2 < 100) return p1; // Remove p2 (pack)
+      return match; 
+  });
+
+  // Case E: Deduplicate repeated strength (e.g. "50/500 50/500" -> "50/500")
+  cleaned = cleaned.replace(/(\b\d+(?:[\.\/]\d+)?(?:MG|ML|MCG|GM|G|IU|KG)?)\s+\1\b/gi, "$1");
+  
+  // Step 8: Normalize spacing
   cleaned = cleaned.replace(/\s+/g, " ").trim();
   
   return cleaned;

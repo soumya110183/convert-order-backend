@@ -18,7 +18,7 @@ import fs from "fs";
 
 import { unifiedExtract } from "../services/unifiedParser.js";
 import { matchProductSmart, matchProductsBatch } from "../services/productMatcher.js";
-import { applyScheme } from "../services/schemeMatcher.js";
+import { applyScheme, findUpsellOpportunity } from "../services/schemeMatcher.js";
 import { matchCustomerSmart } from "../services/customerMatcher.js";
 import { stripLeadingCodes, cleanInvoiceDesc } from "../utils/invoiceUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
@@ -527,15 +527,25 @@ if (hasSheets) {
   schemes
 });
 
+      // 💡 Calculate Upsell Opportunity
+      const upsell = findUpsellOpportunity({
+          productCode,
+          orderQty: qty,
+          itemDesc: row.ITEMDESC,
+          division: row.DVN,
+          customerCode: customer.customerCode,
+          schemes
+      });
 
       if (schemeResult.schemeApplied) {
         schemeRows.push({
-          productCode: row.SAPCODE,
+          productCode: productCode, // ✅ Use resolved code
           productName: row.ITEMDESC,
           orderQty: qty,
           freeQty: schemeResult.freeQty || 0,
           schemePercent: schemeResult.schemePercent || 0,
-          division: row.DVN || ""
+          division: row.DVN || "",
+          appliedScheme: `${qty}+${schemeResult.freeQty || 0}` // 🔥 Format: "200+40"
         });
         totalFreeQty += schemeResult.freeQty || 0;
       }
@@ -549,7 +559,8 @@ if (hasSheets) {
   "BOX PACK": boxPack,
   PACK: pack,
   DVN: row.DVN || "",
-  _hasScheme: schemeResult.schemeApplied || false
+  _hasScheme: schemeResult.schemeApplied || false,
+  _originalIdx: i // 🎯 Keep track of original index for sheet grouping
 });
 
     }
@@ -567,71 +578,220 @@ if (hasSheets) {
       });
     }
 
-    // Generate Excel
+    // 📁 GENERATE EXCEL FILES
     fs.mkdirSync("uploads", { recursive: true });
     
-    const fileName = `order-${customer.customerCode}-${Date.now()}.xlsx`;
-    const filePath = path.join("uploads", fileName);
-
-    const wb = XLSX.utils.book_new();
-    const wsData = output.map(row => {
-      const { _hasScheme, ...cleanRow } = row;
-      return cleanRow;
+    // 🎯 PARTITION DATA BY SHEETS
+    const assignedIndices = new Set();
+    sheets.forEach(sheet => {
+      sheet.productIndices.forEach(idx => assignedIndices.add(idx));
     });
 
-    const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+    const assignedRows = output.filter(row => assignedIndices.has(row._originalIdx));
+    const unassignedRows = output.filter(row => !assignedIndices.has(row._originalIdx));
 
-    // Style headers
-    TEMPLATE_COLUMNS.forEach((_, colIdx) => {
-      const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
-      if (ws[cellRef]) ws[cellRef].s = headerStyle;
-    });
+    const fileNames = [];
+    const downloadUrls = [];
 
-    // Style rows
-    output.forEach((row, idx) => {
-      const excelRow = idx + 1;
-      TEMPLATE_COLUMNS.forEach((col, colIdx) => {
-        const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
-        if (!ws[cellRef]) ws[cellRef] = { v: "" };
+    // 📄 FILE 1: Products assigned to sheets
+    if (hasSheets && assignedRows.length > 0) {
+      const fileName1 = `sheet-orders-${customer.customerCode}-${Date.now()}.xlsx`;
+      const filePath1 = path.join("uploads", fileName1);
+      const wb1 = XLSX.utils.book_new();
 
-        let style = normalCellStyle;
-        if (col === "ORDERQTY") style = qtyCellStyle;
-        if (row._hasScheme) {
-          style = { ...style, fill: schemeRowStyle.fill };
+      // Add each custom sheet
+      sheets.forEach((sheet, sheetIdx) => {
+        const sheetRows = output.filter(row => 
+          sheet.productIndices.includes(row._originalIdx)
+        );
+
+        if (sheetRows.length > 0) {
+          const wsData = sheetRows.map(row => {
+            const { _hasScheme, _originalIdx, ...cleanRow } = row;
+            return cleanRow;
+          });
+
+          const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+          
+          // Style sheet
+          TEMPLATE_COLUMNS.forEach((_, colIdx) => {
+            const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+            if (ws[cellRef]) ws[cellRef].s = headerStyle;
+          });
+
+          sheetRows.forEach((row, idx) => {
+            const excelRow = idx + 1;
+            TEMPLATE_COLUMNS.forEach((col, colIdx) => {
+              const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
+              if (!ws[cellRef]) ws[cellRef] = { v: "" };
+              let style = normalCellStyle;
+              if (col === "ORDERQTY") style = qtyCellStyle;
+              if (row._hasScheme) style = { ...style, fill: schemeRowStyle.fill };
+              ws[cellRef].s = style;
+            });
+          });
+
+          ws["!cols"] = [
+            { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 40 },
+            { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }
+          ];
+
+          XLSX.utils.book_append_sheet(wb1, ws, (sheet.name || `Sheet ${sheetIdx + 1}`).substring(0, 31));
         }
-        ws[cellRef].s = style;
       });
-    });
 
-    ws["!cols"] = [
-      { wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 40 },
-      { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }
-    ];
+      // Add scheme summary to sheet orders file
+      const sheetSchemes = schemeRows.filter(s => 
+        assignedRows.some(r => r.SAPCODE === s.productCode)
+      );
 
-    XLSX.utils.book_append_sheet(wb, ws, "Order Training");
+      if (sheetSchemes.length > 0) {
+        const schemeSheetData = sheetSchemes.map(s => ({
+          "Product Code": s.productCode,
+          "Product Name": s.productName,
+          "Order Qty": s.orderQty,
+          "Free Qty": s.freeQty,
+          "Applied Scheme": s.appliedScheme,
+          "Scheme %": s.schemePercent,
+          "Division": s.division
+        }));
 
-    // 2️⃣ Scheme summary sheet
-const schemeSheetData = schemeRows.map(s => ({
+        const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+        XLSX.utils.book_append_sheet(wb1, schemeWs, "Scheme Summary");
+      }
 
-  "Product Code": s.productCode,
-  "Product Name": s.productName,
-  "Order Qty": s.orderQty,
-  "Free Qty": s.freeQty,
-  "Scheme %": s.schemePercent,
-  "Division": s.division
-}));
+      XLSX.writeFile(wb1, filePath1);
+      fileNames.push(fileName1);
+      downloadUrls.push({ type: 'sheets', url: `/api/orders/download/${upload._id}/sheets` });
+      console.log(`✅ Generated Sheet Orders file: ${fileName1}`);
+    }
 
-const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
-XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
-    XLSX.writeFile(wb, filePath);
+    // 📄 FILE 2: Unassigned products (Main Order)
+    if (unassignedRows.length > 0) {
+      const fileName2 = `main-order-${customer.customerCode}-${Date.now()}.xlsx`;
+      const filePath2 = path.join("uploads", fileName2);
+      const wb2 = XLSX.utils.book_new();
 
-    // Update database
+      const wsData = unassignedRows.map(row => {
+        const { _hasScheme, _originalIdx, ...cleanRow } = row;
+        return cleanRow;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+      
+      TEMPLATE_COLUMNS.forEach((_, colIdx) => {
+        const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+        if (ws[cellRef]) ws[cellRef].s = headerStyle;
+      });
+
+      unassignedRows.forEach((row, idx) => {
+        const excelRow = idx + 1;
+        TEMPLATE_COLUMNS.forEach((col, colIdx) => {
+          const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
+          if (!ws[cellRef]) ws[cellRef] = { v: "" };
+          let style = normalCellStyle;
+          if (col === "ORDERQTY") style = qtyCellStyle;
+          if (row._hasScheme) style = { ...style, fill: schemeRowStyle.fill };
+          ws[cellRef].s = style;
+        });
+      });
+
+      ws["!cols"] = [{ wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb2, ws, "Main Order");
+
+      // Add scheme summary for main order
+      const mainSchemes = schemeRows.filter(s => 
+        unassignedRows.some(r => r.SAPCODE === s.productCode)
+      );
+
+      if (mainSchemes.length > 0) {
+        const schemeSheetData = mainSchemes.map(s => ({
+          "Product Code": s.productCode,
+          "Product Name": s.productName,
+          "Order Qty": s.orderQty,
+          "Free Qty": s.freeQty,
+          "Applied Scheme": s.appliedScheme,
+          "Scheme %": s.schemePercent,
+          "Division": s.division
+        }));
+
+        const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+        XLSX.utils.book_append_sheet(wb2, schemeWs, "Scheme Summary");
+      }
+
+      XLSX.writeFile(wb2, filePath2);
+      fileNames.push(fileName2);
+      downloadUrls.push({ type: 'main', url: `/api/orders/download/${upload._id}/main` });
+      console.log(`✅ Generated Main Order file: ${fileName2}`);
+    }
+
+    // 🔄 FALLBACK: If no sheets, create single file with all products
+    if (!hasSheets || fileNames.length === 0) {
+      const fileName = `order-${customer.customerCode}-${Date.now()}.xlsx`;
+      const filePath = path.join("uploads", fileName);
+      const wb = XLSX.utils.book_new();
+
+      const wsData = output.map(row => {
+        const { _hasScheme, _originalIdx, ...cleanRow } = row;
+        return cleanRow;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+      
+      TEMPLATE_COLUMNS.forEach((_, colIdx) => {
+        const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+        if (ws[cellRef]) ws[cellRef].s = headerStyle;
+      });
+
+      output.forEach((row, idx) => {
+        const excelRow = idx + 1;
+        TEMPLATE_COLUMNS.forEach((col, colIdx) => {
+          const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
+          if (!ws[cellRef]) ws[cellRef] = { v: "" };
+          let style = normalCellStyle;
+          if (col === "ORDERQTY") style = qtyCellStyle;
+          if (row._hasScheme) style = { ...style, fill: schemeRowStyle.fill };
+          ws[cellRef].s = style;
+        });
+      });
+
+      ws["!cols"] = [{ wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+      XLSX.utils.book_append_sheet(wb, ws, "Order");
+
+      if (schemeRows.length > 0) {
+        const schemeSheetData = schemeRows.map(s => ({
+          "Product Code": s.productCode,
+          "Product Name": s.productName,
+          "Order Qty": s.orderQty,
+          "Free Qty": s.freeQty,
+          "Applied Scheme": s.appliedScheme,
+          "Scheme %": s.schemePercent,
+          "Division": s.division
+        }));
+
+        const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+        XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
+      }
+
+      XLSX.writeFile(wb, filePath);
+      fileNames.push(fileName);
+      downloadUrls.push({ type: 'single', url: `/api/orders/download/${upload._id}` });
+      console.log(`✅ Generated single order file: ${fileName}`);
+    }
+
     upload.status = "CONVERTED";
-    upload.outputFile = fileName;
+    upload.outputFile = fileNames[0]; // Primary file
+    upload.outputFiles = fileNames; // All generated files
     upload.recordsProcessed = output.length;
     upload.recordsFailed = errors.length;
     upload.convertedData = {
-      rows: output.map(row => ({ ...row, hasScheme: row._hasScheme === true }))
+      headers: TEMPLATE_COLUMNS, // Set exact template headers
+      rows: output.map(row => { 
+        const { _hasScheme, _upsell, _originalIdx, hasScheme, ...cleanRow } = row;
+        // Keep _upsell if present, but exclude it from Excel columns
+        if (_upsell) cleanRow._upsell = _upsell;
+        return cleanRow; 
+      })
     };
     upload.customerCode = customer.customerCode;
     upload.customerName = customer.customerName;
@@ -643,7 +803,7 @@ XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
 
     await upload.save();
 
-    console.log(`✅ Saved: ${fileName}\n`);
+    console.log(`✅ Saved: ${upload.outputFiles?.join(', ') || upload.outputFile}\n`);
 
     res.json({
       success: true,
@@ -652,8 +812,9 @@ XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
       recordsProcessed: output.length,
       errors: errors.length,
       schemeSummary: { count: schemeRows.length, totalFreeQty },
-      convertedData: output.map(({ _hasScheme, ...row }) => row),
-      downloadUrl: `/api/orders/download/${upload._id}`
+      convertedData: output.map(({ _hasScheme, _upsell, ...row }) => ({ ...row, _upsell })),
+      downloadUrl: `/api/orders/download/${upload._id}`,
+      downloadUrls: downloadUrls // ✅ Send all download options
     });
 
   } catch (err) {
@@ -703,6 +864,13 @@ export const getOrderById = async (req, res, next) => {
       schemeDetails,
       fileName: upload.fileName,
       outputFile: upload.outputFile,
+      outputFiles: upload.outputFiles || [], // ✅ Return multiple files
+      downloadUrls: (upload.outputFiles || []).length > 0 ? [
+         ...(upload.outputFiles.some(f => f.startsWith('sheet-orders')) ? [{ type: 'sheets', url: `/api/orders/download/${upload._id}/sheets` }] : []),
+         ...(upload.outputFiles.some(f => f.startsWith('main-order')) ? [{ type: 'main', url: `/api/orders/download/${upload._id}/main` }] : []),
+         // Fallback if no specific types found but files exist, or just single file
+         ...(upload.outputFiles.length === 1 && !upload.outputFiles[0].startsWith('sheet') && !upload.outputFiles[0].startsWith('main') ? [{ type: 'single', url: `/api/orders/download/${upload._id}` }] : [])
+      ] : [{ type: 'single', url: `/api/orders/download/${upload._id}` }],
       customerCode: upload.customerCode,
       customerName: upload.customerName,
       createdAt: upload.createdAt,
@@ -771,7 +939,12 @@ export const getOrderHistory = async (req, res) => {
         processed: h.recordsProcessed || 0,
         failed: h.recordsFailed || 0,
         customerName: h.customerName,
-        createdAt: h.createdAt
+        createdAt: h.createdAt,
+        downloadUrls: (h.outputFiles || []).length > 0 ? [
+           ...(h.outputFiles.some(f => f.startsWith('sheet-orders')) ? [{ type: 'sheets', url: `/api/orders/download/${h._id}/sheets` }] : []),
+           ...(h.outputFiles.some(f => f.startsWith('main-order')) ? [{ type: 'main', url: `/api/orders/download/${h._id}/main` }] : []),
+           ...(h.outputFiles.length === 1 && !h.outputFiles[0].startsWith('sheet') && !h.outputFiles[0].startsWith('main') ? [{ type: 'single', url: `/api/orders/download/${h._id}` }] : [])
+        ] : [{ type: 'single', url: `/api/orders/download/${h._id}` }]
       })),
       pagination: {
         page,

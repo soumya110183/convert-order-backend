@@ -43,8 +43,14 @@ const findSheet = (sheets, keywords) =>
     keywords.some(k => name.includes(k))
   )?.[1] || [];
 
-const normalize = (v = "") =>
-  v.toString().trim().toUpperCase();
+function normalize(text = "") {
+  return text
+    .toUpperCase()
+    .replace(/[-_/]/g, " ")     // treat hyphen as space
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 
 function normalizeDivision(div = "") {
   return div
@@ -217,10 +223,8 @@ const productOps = productRows
     
     function cleanNameForDB(name = "") {
         return name
-          .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT|COMBIPACK)\b/gi, "")
           .replace(/\b(\d+)\s*['`"]?S\b/gi, "") // Remove 10's, 10S
           .replace(/\b\d+X\d+\b/gi, "")        // Remove 10X10
-          .replace(/\b(MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // 🔥 Remove units
           .replace(/\s+/g, " ")
           .trim();
     }
@@ -286,282 +290,455 @@ if (productOps.length) {
   // -------------------------------------------------------------
   // 3. PROCESS SCHEMES (Raw Matrix Mode)
   // -------------------------------------------------------------
-  const rawSheets = readExcelMatrix(req.file.buffer);
+ /* =====================================================
+   COMPLETE SCHEME UPLOAD WITH FULL DIAGNOSTICS
+   Replace entire scheme processing section in uploadMasterDatabase
+===================================================== */
+
+const rawSheets = readExcelMatrix(req.file.buffer);
   
-  const schemeRowsRaw = 
-    Object.entries(rawSheets).find(([k]) =>
-      k.toLowerCase().includes("scheme")
-    )?.[1] || [];
+const schemeRowsRaw = 
+  Object.entries(rawSheets).find(([k]) =>
+    k.toLowerCase().includes("scheme")
+  )?.[1] || [];
 
-  console.log(`📊 Processing ${schemeRowsRaw.length} raw scheme rows...`);
+console.log(`\n${"=".repeat(80)}`);
+console.log(`📊 SCHEME PROCESSING STARTED`);
+console.log(`${"=".repeat(80)}`);
+console.log(`Raw rows in Excel: ${schemeRowsRaw.length}\n`);
 
-  // ✅ CLEAR EXISTING SCHEMES TO PREVENT DUPLICATES
-  if (schemeRowsRaw.length > 0) {
-    console.log("🧹 Clearing existing schemes before upload...");
-    await SchemeMaster.deleteMany({});
-  }
+const blockDivisions = {}; 
+let skippedSchemes = 0;
+let processedSlabs = 0;
+const failedMatches = []; // Track what failed and why
 
-  // Track division per column index (0, 4, 8...)
-  // key: column index, value: Division Name
-  const blockDivisions = {}; 
-  const schemeOps = [];
-  let skippedSchemes = 0;
-  const schemeMap = new Map(); 
+// ✅ Map: productCode|division -> scheme data
+const schemeMap = new Map(); 
 
-  const BLOCK_SIZE = 4;
+// STEP 1: DETECT ALL DIVISIONS
+console.log("STEP 1: Detecting divisions...\n");
 
-  for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
-      const row = schemeRowsRaw[rIndex];
-      const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
-      const totalCols = row.length;
-
-      // A. Division Row Check (could be side-by-side)
-      if (/DIVISION\s*:/i.test(rowStr)) {
-          // Scan block starts only
-          const BLOCK_STARTS = [0, 5];
-          for(const c of BLOCK_STARTS) {
-             const cell = row[c] ? String(row[c]).trim() : "";
-             if (/DIVISION\s*:/i.test(cell)) {
-                 const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
-                 if (divMatch) {
-                     const divName = divMatch[1].trim().toUpperCase();
-                     blockDivisions[c] = divName;
-                     console.log(`📂 Division found at Col ${c}: ${divName}`);
-                 }
-             }
-          }
-          continue;
-      }
-
-      // B. Skip Header/Junk
-      if (/PRODUCT.*MIN/i.test(rowStr)) continue;
-      if (rowStr.length < 5) continue;
-
-      // C. Process Blocks (Indices 0 and 5)
-      // The Excel has a GAP at index 4. So blocks are at 0 and 5.
-      const BLOCK_STARTS = [0, 5]; 
-
-      for (const i of BLOCK_STARTS) {
-          // Extract block
-          const pName = row[i];
-          const minQ = row[i+1];
-          const freeQ = row[i+2];
-          const pct = row[i+3];
-
-          // Check validity
-          if (!pName && !minQ && !freeQ && !pct) continue; 
-          
-          let productName = pName ? String(pName).trim() : null;
-          
-          // Basic filtering (skip valid headers or trivial rows)
-          if (!productName || productName.length < 3 || /PRODUCT/i.test(productName) || /^\d+$/.test(productName)) {
-              continue; 
-          }
-
-          let minQty = Number(minQ);
-          let freeQty = Number(freeQ);
-          let schemePercent = Number(pct);
-          
-          if (Number.isNaN(minQty)) minQty = 0;
-          if (Number.isNaN(freeQty)) freeQty = 0;
-          if (Number.isNaN(schemePercent)) schemePercent = 0; // If percent is 0.2 (20%) or 20 (20%)?
-          
-          // Normalize percent (Excel might be 0.2 or 20)
-          // If < 1, assume decimal (0.2 = 20%). If > 1, assume value (20 = 20%)
-          if (schemePercent > 0 && schemePercent <= 1) {
-             // It's likely decimal 0.2
-             // Keep it as is? My code uses format: 20% -> 0.2
-          } else if (schemePercent > 1) {
-             schemePercent = schemePercent / 100;
-          }
-
-          if (minQty === 0 && freeQty === 0 && schemePercent === 0) continue;
-
-
-          // D. Map Product
-          const cleanProductName = productName.replace(/\s+/g, " ").trim();
-          
-          // 🔥 HANDLE SLASH SEPARATED PRODUCTS (e.g., LEVOBACT 500/750)
-          let potentialNames = [];
-          if (cleanProductName.includes("/") && /\d+/.test(cleanProductName)) {
-            const parts = cleanProductName.split("/");
-            // Assuming format like "NAME 500/750"
-            const nameBaseMatch = parts[0].match(/^([A-Z\s\-]+)\s+(\d+)$/i);
-            if (nameBaseMatch) {
-              const base = nameBaseMatch[1];
-              const firstStrength = nameBaseMatch[2];
-              potentialNames.push(`${base} ${firstStrength}`);
-              
-              // Process subsequent parts
-              for (let k = 1; k < parts.length; k++) {
-                const part = parts[k].trim();
-                // If it's just a number, append to base
-                // If it's a full string?
-                const partClean = part.trim();
-                if (/^\d+$/.test(partClean)) {
-                   potentialNames.push(`${base} ${partClean}`);
-                } else {
-                   // e.g. "MF SUSP" in "DOLO MF JUNIOR/ MF SUSP"
-                   // Try to use it as is
-                   potentialNames.push(partClean); 
+for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
+    const row = schemeRowsRaw[rIndex];
+    const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
+    
+    if (/DIVISION\s*:/i.test(rowStr)) {
+        // Scan ALL columns
+        for (let colIndex = 0; colIndex < row.length; colIndex++) {
+            const cell = row[colIndex] ? String(row[colIndex]).trim() : "";
+            if (/DIVISION\s*:/i.test(cell)) {
+                const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
+                if (divMatch) {
+                    const divName = divMatch[1].trim().toUpperCase();
+                    blockDivisions[colIndex] = divName;
+                    console.log(`✅ Division at Column ${colIndex}: "${divName}"`);
                 }
-              }
-            } else {
-              // Try plain split if no clear pattern
-              // e.g. "FERTIFLUS/ FERTIPLUS M"
-              potentialNames.push(parts[0].trim());
-              potentialNames.push(parts[1].trim());
             }
-          } else {
+        }
+    }
+}
+
+const BLOCK_STARTS = Object.keys(blockDivisions).map(Number).sort((a, b) => a - b);
+
+if (BLOCK_STARTS.length === 0) {
+    console.warn("⚠️  NO DIVISIONS DETECTED! Using fallback columns [0, 5]");
+    BLOCK_STARTS.push(0, 5);
+    blockDivisions[0] = "DIVISION1";
+    blockDivisions[5] = "DIVISION2";
+} else {
+    console.log(`\n✅ Block starts detected: [${BLOCK_STARTS.join(', ')}]`);
+}
+
+console.log(`\nTotal divisions found: ${Object.keys(blockDivisions).length}\n`);
+
+// STEP 2: ENHANCED PRODUCT MATCHER WITH DIAGNOSTICS
+function findBestProductMatch(searchName, currentDivision, allProducts, diagnostics = {}) {
+    if (!searchName || searchName.length < 2) {
+        diagnostics.reason = "Search name too short";
+        return null;
+    }
+    
+    const { name: baseName, strength: dosage, variant } = splitProduct(searchName);
+    const normDivision = normalizeDivision(currentDivision);
+    const normBase = normalizeMedicalTerms(baseName);
+    const cleanedSearchName = [baseName, dosage, variant]
+        .filter(Boolean).join(' ').trim().toUpperCase();
+
+    diagnostics.parsed = { baseName, dosage, variant };
+    diagnostics.normalized = { cleanedSearchName, normBase, normDivision };
+
+    // Strategy 1: Product code exact match
+    if (/^[A-Z0-9]{4,10}$/.test(searchName)) {
+        const match = allProducts.find(p => p.productCode === searchName);
+        if (match) {
+            diagnostics.matchType = "PRODUCT_CODE_EXACT";
+            return match;
+        }
+    }
+
+    // Strategy 2: Exact name + division
+    let match = allProducts.find(p =>
+        normalizeMedicalTerms(p.cleanedProductName || p.productName) === normalizeMedicalTerms(cleanedSearchName) &&
+        normalizeDivision(p.division) === normDivision
+    );
+    if (match) {
+        diagnostics.matchType = "EXACT_NAME_DIVISION";
+        return match;
+    }
+
+    // Strategy 3: Base name + division
+    match = allProducts.find(p =>
+        normalizeMedicalTerms(p.baseName || p.productName) === normBase &&
+        normalizeDivision(p.division) === normDivision
+    );
+    if (match) {
+        diagnostics.matchType = "BASE_NAME_DIVISION";
+        return match;
+    }
+
+    // Strategy 4: Fuzzy division
+    match = allProducts.find(p =>
+        normalizeMedicalTerms(p.cleanedProductName || p.productName) === normalizeMedicalTerms(cleanedSearchName) &&
+        normalizeDivisionAlias(p.division) === normalizeDivisionAlias(currentDivision)
+    );
+    if (match) {
+        diagnostics.matchType = "FUZZY_DIVISION";
+        return match;
+    }
+
+    // Strategy 5: Partial match + division
+    match = allProducts.find(p => {
+        const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+        return (pBase.includes(normBase) || normBase.includes(pBase)) &&
+               normalizeDivisionAlias(p.division) === normalizeDivisionAlias(currentDivision) &&
+               baseName.length > 3;
+    });
+    if (match) {
+        diagnostics.matchType = "PARTIAL_NAME_DIVISION";
+        return match;
+    }
+
+    // Strategy 6: Cross-division (single candidate)
+    const candidates = allProducts.filter(p => {
+        const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
+        const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+        return pName === normalizeMedicalTerms(cleanedSearchName) || pBase === normBase;
+    });
+
+    diagnostics.candidates = candidates.length;
+
+    if (candidates.length === 1) {
+        diagnostics.matchType = "CROSS_DIVISION_UNIQUE";
+        return candidates[0];
+    }
+
+    if (candidates.length > 1) {
+        const divMatch = candidates.find(c => 
+            normalizeDivisionAlias(c.division) === normalizeDivisionAlias(currentDivision)
+        );
+        if (divMatch) {
+            diagnostics.matchType = "CROSS_DIVISION_PREFER";
+            return divMatch;
+        }
+        diagnostics.matchType = "CROSS_DIVISION_FIRST";
+        return candidates[0];
+    }
+
+    diagnostics.reason = "NO_MATCH_FOUND";
+    return null;
+}
+
+// STEP 3: PROCESS ALL ROWS
+console.log(`${"=".repeat(80)}`);
+console.log("STEP 2: Processing scheme rows...\n");
+
+let lastProductName = "";
+let rowsProcessed = 0;
+let rowsSkipped = 0;
+
+for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
+    const row = schemeRowsRaw[rIndex];
+    const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
+
+    // Skip headers
+    if (/DIVISION\s*:/i.test(rowStr)) continue;
+    if (/PRODUCT.*MIN.*QTY/i.test(rowStr)) continue;
+    if (/^SCHEME\s*%$/i.test(rowStr)) continue;
+
+    // Process each block
+    for (const blockStart of BLOCK_STARTS) {
+        const pName = row[blockStart];
+        const minQ = row[blockStart + 1];
+        const freeQ = row[blockStart + 2];
+        const pct = row[blockStart + 3];
+
+        if (!pName && !minQ && !freeQ && !pct) continue;
+        
+        let productName = pName ? String(pName).trim() : "";
+        
+        // Carry forward logic
+        if ((!productName || /^\d+$/.test(productName)) && (minQ || freeQ || pct)) {
+            productName = lastProductName;
+        }
+        
+        // Validate
+        if (!productName || 
+            productName.length < 2 || 
+            /^PRODUCT$/i.test(productName) || 
+            /^MIN$/i.test(productName) ||
+            /^QTY$/i.test(productName) ||
+            /^FREE$/i.test(productName) ||
+            (/^\d+$/.test(productName) && !lastProductName)) {
+            continue;
+        }
+
+        // Update carry-forward
+        if (productName && productName.length > 2 && !/^\d+$/.test(productName)) {
+            lastProductName = productName;
+        }
+
+        let minQty = Number(minQ) || 0;
+        let freeQty = Number(freeQ) || 0;
+        let schemePercent = Number(pct) || 0;
+        
+        // Normalize percent
+        if (schemePercent > 0 && schemePercent <= 1) {
+            // Already decimal
+        } else if (schemePercent > 1 && schemePercent <= 100) {
+            schemePercent = schemePercent / 100;
+        }
+
+        if (minQty === 0 && freeQty === 0 && schemePercent === 0) {
+            rowsSkipped++;
+            continue;
+        }
+
+        rowsProcessed++;
+
+        // Handle slash-separated products
+        const cleanProductName = productName.replace(/\s+/g, " ").trim();
+        let potentialNames = [];
+
+        if (cleanProductName.includes("/")) {
+            const slashMatch = cleanProductName.match(/^([A-Z\s\-]+?)\s+(\d+)\/(.+)$/i);
+            if (slashMatch) {
+                const base = slashMatch[1].trim();
+                const first = slashMatch[2].trim();
+                const rest = slashMatch[3].split("/").map(s => s.trim());
+                
+                potentialNames.push(`${base} ${first}`);
+                rest.forEach(r => {
+                    potentialNames.push(/^\d+$/.test(r) ? `${base} ${r}` : r);
+                });
+            } else {
+                potentialNames = cleanProductName.split("/").map(s => s.trim());
+            }
+        } else {
             potentialNames.push(cleanProductName);
-          }
+        }
 
-          // Process each potential name
-          for (const searchName of potentialNames) {
-              const { name: baseName, strength: dosage, variant } = splitProduct(searchName);
-              
-              // Use Division specific to this block
-              const currentDivision = blockDivisions[i];
-              if (!currentDivision) {
-                  skippedSchemes++;
-                  continue;
-              }
+        const currentDivision = blockDivisions[blockStart];
+        if (!currentDivision) {
+            console.warn(`⚠️  Row ${rIndex + 1}: No division for column ${blockStart}`);
+            skippedSchemes++;
+            continue;
+        }
 
-              const normDivision = normalizeDivision(currentDivision);
-              const normBase = normalizeMedicalTerms(baseName);
-              const cleanedSearchName = [baseName, dosage, variant]
-                .filter(Boolean).join(' ').trim().toUpperCase();
+        // Process each variant
+        for (const searchName of potentialNames) {
+            if (!searchName || searchName.length < 2) continue;
 
-              // 🔥 TRY MULTIPLE MATCHING STRATEGIES
-              let matchedProduct =
-                // 1. Exact cleaned name + division
-                allProducts.find(p =>
-                  normalizeMedicalTerms(p.cleanedProductName) === normalizeMedicalTerms(cleanedSearchName) &&
-                  normalizeDivision(p.division) === normDivision
-                ) ||
-                // 2. Base name match + division
-                allProducts.find(p =>
-                  normalizeMedicalTerms(p.baseName) === normBase &&
-                  normalizeDivision(p.division) === normDivision
-                ) ||
-                 // 3. Relaxed division check
-                allProducts.find(p =>
-                  normalizeMedicalTerms(p.cleanedProductName) === normalizeMedicalTerms(cleanedSearchName) &&
-                  (normalizeDivision(p.division).includes(normDivision) || normDivision.includes(normalizeDivision(p.division)))
-                ) ||
-                // 4. Reverse Inclusion (Excel Name includes DB Name) WITH Division Match
-                allProducts.find(p => 
-                   normBase.includes(normalizeMedicalTerms(p.baseName)) &&
-                   normalizeDivision(p.division) === normDivision &&
-                   p.baseName.length > 3 // Avoid matching short names like "BO"
-                );
+            const diagnostics = {};
+            const matchedProduct = findBestProductMatch(searchName, currentDivision, allProducts, diagnostics);
 
-              // 5. 🔥 CROSS-DIVISION FALLBACK (If still not found)
-              // Many products are in DB under strict codes (CAR1) but Excel has full names (CARDI-CARE)
-              if (!matchedProduct) {
-                  // Try exact unique match globally
-                  const candidates = allProducts.filter(p => 
-                      normalizeMedicalTerms(p.cleanedProductName) === normalizeMedicalTerms(cleanedSearchName) ||
-                      normalizeMedicalTerms(p.baseName) === normBase ||
-                      normBase.includes(normalizeMedicalTerms(p.baseName))
-                  );
+            if (!matchedProduct) {
+                skippedSchemes++;
+                
+                // Store failure details
+                if (failedMatches.length < 50) {
+                    failedMatches.push({
+                        row: rIndex + 1,
+                        searchName,
+                        division: currentDivision,
+                        minQty,
+                        freeQty,
+                        diagnostics
+                    });
+                }
+                
+                // Log first 10 failures
+                if (failedMatches.length <= 10) {
+                    console.log(`❌ [Row ${rIndex + 1}] FAILED: "${searchName}" (${currentDivision})`);
+                    console.log(`   Reason: ${diagnostics.reason || 'Unknown'}`);
+                    if (diagnostics.candidates) {
+                        console.log(`   Candidates found: ${diagnostics.candidates}`);
+                    }
+                }
+                continue;
+            }
 
-                  // If we found exactly one candidate, use it regardless of division
-                  if (candidates.length === 1) {
-                      matchedProduct = candidates[0];
-                      // console.log(`🔄 Cross-Division Match: ${searchName} (${currentDivision}) -> ${matchedProduct.productName} (${matchedProduct.division})`);
-                  } 
-                  // If multiple, try to find "best" match? 
-                  else if (candidates.length > 1) {
-                      // Prefer one where division roughly matches or first one
-                      // Often divisions are just aliases
-                      matchedProduct = candidates[0]; 
-                  }
-              }
-
-              if (!matchedProduct) {
-                 console.warn(`❌ Scheme skipped – product not found: ${searchName} (${currentDivision})`);
-                 skippedSchemes++;
-                 continue;
-              }
-
-              const slab = {
+            // Success - create slab
+            const slab = {
                 minQty,
                 freeQty,
                 schemePercent: Number(schemePercent.toFixed(4))
-              };
+            };
 
-              // E. Aggregate
-              // Use Key from MATCHED PRODUCT if valid, but maybe group by Excel Division?
-              // The frontend might filter by "CARDI-CARE". If DB is "CAR3", we should probably use the Excel Division name for display/lookup
-              // BUT we need productCode.
-              
-              const key = `${matchedProduct.productCode}|${normalizeDivisionAlias(currentDivision)}`;
-              if (!schemeMap.has(key)) {
-                  schemeMap.set(key, {
-                      productCode: matchedProduct.productCode,
-                      productName: matchedProduct.productName,
-                      division: normalizeDivision(currentDivision), // Store normalized Excel div
-                      slabs: []
-                  });
-              }
-              
-              schemeMap.get(key).slabs.push(slab);
-          }
-      }
-  }
+            const normDiv = normalizeDivision(currentDivision);
+            const key = `${matchedProduct.productCode}|${normDiv}`;
+            
+            if (!schemeMap.has(key)) {
+                schemeMap.set(key, {
+                    productCode: matchedProduct.productCode,
+                    productName: matchedProduct.productName,
+                    division: normDiv,
+                    slabs: []
+                });
+            }
+            
+            schemeMap.get(key).slabs.push(slab);
+            processedSlabs++;
+            
+            // Log first 20 successes
+            if (processedSlabs <= 20) {
+                console.log(`✅ [${processedSlabs}] "${searchName}" -> ${matchedProduct.productName} | ${minQty}+${freeQty} (${diagnostics.matchType})`);
+            }
+        }
+    }
+}
 
-  // ✅ 4. CREATE UPSERT OPERATIONS (from Map)
-  for (const [key, data] of schemeMap.entries()) {
+// STEP 4: CREATE BULK OPERATIONS
+console.log(`\n${"=".repeat(80)}`);
+console.log("STEP 3: Creating database operations...\n");
+
+const schemeOps = [];
+let totalUniqueSchemes = 0;
+let totalSlabsStored = 0;
+
+for (const [key, data] of schemeMap.entries()) {
     const uniqueSlabs = data.slabs.filter((slab, index, self) =>
         index === self.findIndex((t) => (
             t.minQty === slab.minQty &&
             t.freeQty === slab.freeQty &&
-            t.schemePercent === slab.schemePercent
+            Math.abs(t.schemePercent - slab.schemePercent) < 0.0001
         ))
     );
+
+    uniqueSlabs.sort((a, b) => a.minQty - b.minQty);
+
+    totalUniqueSchemes++;
+    totalSlabsStored += uniqueSlabs.length;
 
     schemeOps.push({
         updateOne: {
             filter: {
                 productCode: data.productCode,
-                // division: normalizeDivisionAlias(data.division) // Use DB division or Excel? 
-                // Scheme lookup usually relies on Product Code. 
-                // But if we want to query by Division, we should store that.
+                division: data.division
             },
             update: {
                 $set: {
                     productCode: data.productCode,
                     productName: data.productName,
-                    division: data.division, // Excel division
+                    division: data.division,
                     isActive: true,
-                    slabs: uniqueSlabs 
+                    slabs: uniqueSlabs
                 }
             },
             upsert: true
         }
     }); 
-  }
-
-
-console.log(`💾 Finalizing bulkWrite for ${schemeOps.length} schemes...`);
-console.log(`⚠️ Skipped ${skippedSchemes} schemes due to missing products or invalid data`);
-
-if (schemeOps.length > 0) {
-  await SchemeMaster.bulkWrite(schemeOps);
 }
 
-/* ✅ COMMIT TRANSACTION */
-// await session.commitTransaction();
-// session.endSession();
+// STEP 5: COMPREHENSIVE SUMMARY
+console.log(`${"=".repeat(80)}`);
+console.log("📊 FINAL PROCESSING SUMMARY");
+console.log(`${"=".repeat(80)}`);
+console.log(`\n📥 INPUT:`);
+console.log(`   Total Excel rows: ${schemeRowsRaw.length}`);
+console.log(`   Divisions detected: ${Object.keys(blockDivisions).length}`);
+console.log(`   Block positions: [${BLOCK_STARTS.join(', ')}]`);
 
+console.log(`\n⚙️  PROCESSING:`);
+console.log(`   Rows processed: ${rowsProcessed}`);
+console.log(`   Rows skipped (empty): ${rowsSkipped}`);
+console.log(`   Slabs extracted: ${processedSlabs}`);
+
+console.log(`\n✅ SUCCESS:`);
+console.log(`   Unique products matched: ${totalUniqueSchemes}`);
+console.log(`   Total slabs stored: ${totalSlabsStored}`);
+console.log(`   Avg slabs per product: ${(totalSlabsStored / Math.max(totalUniqueSchemes, 1)).toFixed(1)}`);
+
+console.log(`\n❌ FAILURES:`);
+console.log(`   Failed matches: ${skippedSchemes}`);
+console.log(`   Success rate: ${((totalUniqueSchemes / Math.max(totalUniqueSchemes + skippedSchemes, 1)) * 100).toFixed(1)}%`);
+
+// Show multi-slab products
+const multiSlabProducts = Array.from(schemeMap.values())
+    .filter(p => p.slabs.length > 1)
+    .slice(0, 5);
+
+if (multiSlabProducts.length > 0) {
+    console.log(`\n📋 Sample Multi-Slab Products:`);
+    multiSlabProducts.forEach(p => {
+        console.log(`   ${p.productName} (${p.division}): ${p.slabs.length} slabs`);
+    });
+}
+
+// Show top failures
+if (failedMatches.length > 0) {
+    console.log(`\n⚠️  TOP FAILED MATCHES (showing up to 10):`);
+    failedMatches.slice(0, 10).forEach((f, idx) => {
+        console.log(`\n${idx + 1}. Row ${f.row}: "${f.searchName}" (${f.division})`);
+        console.log(`   Scheme: ${f.minQty}+${f.freeQty}`);
+        console.log(`   Reason: ${f.diagnostics.reason || 'Unknown'}`);
+        if (f.diagnostics.parsed) {
+            console.log(`   Parsed: base="${f.diagnostics.parsed.baseName}", strength="${f.diagnostics.parsed.dosage}"`);
+        }
+        if (f.diagnostics.candidates !== undefined) {
+            console.log(`   Candidates: ${f.diagnostics.candidates}`);
+        }
+    });
+    
+    console.log(`\n💡 SUGGESTIONS:`);
+    if (failedMatches.some(f => f.diagnostics.reason === 'NO_MATCH_FOUND')) {
+        console.log(`   • Add missing products to Product Master database`);
+    }
+    if (failedMatches.some(f => f.diagnostics.candidates > 1)) {
+        console.log(`   • Check for duplicate products with different divisions`);
+    }
+    console.log(`   • Verify product names in scheme Excel match Product Master`);
+}
+
+console.log(`\n${"=".repeat(80)}\n`);
+
+// STEP 6: WRITE TO DATABASE
+if (schemeOps.length > 0) {
+    console.log("💾 Writing to database...\n");
+    const result = await SchemeMaster.bulkWrite(schemeOps);
+    console.log(`✅ Database write complete:`);
+    console.log(`   Inserted: ${result.upsertedCount || 0}`);
+    console.log(`   Modified: ${result.modifiedCount || 0}`);
+    console.log(`   Total operations: ${schemeOps.length}\n`);
+}
+
+// Return detailed response
 res.json({
-  success: true,
-  message: "Master database uploaded successfully",
-  inserted,
-  updated,
-  schemesProcessed: schemeOps.length,
-  schemesSkipped: skippedSchemes
+    success: true,
+    message: "Master database uploaded successfully",
+    inserted,
+    updated,
+    schemes: {
+        documents: totalUniqueSchemes,
+        totalSlabs: totalSlabsStored,
+        avgSlabsPerProduct: (totalSlabsStored / Math.max(totalUniqueSchemes, 1)).toFixed(1),
+        processedSlabs: processedSlabs,
+        skipped: skippedSchemes,
+        divisionsDetected: Object.keys(blockDivisions).length,
+        blockPositions: BLOCK_STARTS,
+        successRate: ((totalUniqueSchemes / Math.max(totalUniqueSchemes + skippedSchemes, 1)) * 100).toFixed(1) + '%',
+        multiSlabCount: Array.from(schemeMap.values()).filter(p => p.slabs.length > 1).length,
+        failedSamples: failedMatches.slice(0, 10)
+    }
 });
 
   } catch (err) {

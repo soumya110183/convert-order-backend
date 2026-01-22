@@ -72,6 +72,10 @@ schemeDetails: [
     recordsFailed: { type: Number, default: 0 },
 
     outputFile: String,
+    outputFiles: {
+      type: [String],
+      default: []
+    },
     extractionMeta: mongoose.Schema.Types.Mixed,
     processingTimeMs: Number,
 

@@ -16,7 +16,10 @@ import {
 import {
   downloadConvertedFile,
   downloadSchemeFile,
-  previewConvertedOrders
+  previewConvertedOrders,
+  previewSchemeData,
+  updateConvertedData,
+  updateSchemeData
 } from "../controllers/staffDownloadController.js";
 
 import { protect } from "../middlewares/authMiddleware.js";
@@ -28,10 +31,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_, file, cb) => {
-    if (file.originalname.match(/\.(pdf|xls|xlsx|txt)$/i)) {
+    if (file.originalname.match(/\.(pdf|xls|xlsx|txt|csv)$/i)) {
       cb(null, true);
     } else {
-      cb(new Error("Only PDF, Excel or Text files allowed"));
+      cb(new Error("Only PDF, Excel, Text or CSV files allowed"));
     }
   }
 });
@@ -54,13 +57,19 @@ router.post("/check-schemes", checkSchemes);
 router.get("/history", getOrderHistory);
 
 // Step 4: Download (MOST SPECIFIC FIRST)
+router.get("/download/:id/:type", downloadConvertedFile);
 router.get("/download/:id", downloadConvertedFile);
 router.get("/:id/scheme-file", downloadSchemeFile);
 
 // Step 5: Preview
 router.get("/preview/:id", previewConvertedOrders);
+router.get("/preview-scheme/:id", previewSchemeData);
 
-// Step 5b: Get schemes for specific product (Manual Mapping)
+// Step 5b: Update data (edit before download)
+router.put("/converted-data/:id", updateConvertedData);
+router.put("/scheme-data/:id", updateSchemeData);
+
+// Step 5c: Get schemes for specific product (Manual Mapping)
 router.get("/schemes/product/:productCode", getProductSchemes);
 
 // Step 6: Get single order (LAST – generic)
