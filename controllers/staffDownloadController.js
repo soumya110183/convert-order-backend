@@ -35,7 +35,16 @@ const normalCellStyle = {
 };
 
 const schemeRowStyle = {
-  fill: { patternType: "solid", fgColor: { rgb: "FFFF99" } },   // Light yellow for schemes
+  fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } },   // Yellow
+  border: {
+    top: { style: "thin" }, bottom: { style: "thin" },
+    left: { style: "thin" }, right: { style: "thin" }
+  }
+};
+
+const qtyCellStyle = {
+  fill: { patternType: "solid", fgColor: { rgb: "FFFF99" } },
+  alignment: { horizontal: "center" },
   border: {
     top: { style: "thin" }, bottom: { style: "thin" },
     left: { style: "thin" }, right: { style: "thin" }
@@ -216,12 +225,24 @@ export async function downloadSchemeFile(req, res, next) {
     
     schemeDetails.forEach((row, idx) => {
       const excelRow = idx + 1;
-      headers.forEach((_, colIdx) => {
+      headers.forEach((colName, colIdx) => {
         const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
-        if (!ws[cellRef]) ws[cellRef] = { v: "" }; // Ensure cell exists
+        if (!ws[cellRef]) ws[cellRef] = { v: "" }; 
         
-        // Use schemeRowStyle as requested ("yellow row colour... like done in converted files")
-        ws[cellRef].s = schemeRowStyle; 
+        let style = normalCellStyle;
+        
+        // Use center alignment for quantity columns
+        if (colName === "Order Qty" || colName === "Free Qty" || colName === "Scheme %") {
+             style = qtyCellStyle;
+        }
+        
+        // Apply Yellow Fill to EVERYTHING in scheme summary (as it contains only scheme rows)
+        style = {
+             ...style, 
+             fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } }
+        };
+
+        ws[cellRef].s = style; 
       });
     });
 
@@ -314,7 +335,7 @@ export async function previewSchemeData(req, res, next) {
 
 
 /* =====================================================
-   UPDATE CONVERTED DATA
+   UPDATE CONVERTED DATA (WITH SCHEME RECALCULATION)
    PUT /api/orders/converted-data/:id
 ===================================================== */
 export async function updateConvertedData(req, res, next) {
@@ -363,8 +384,63 @@ export async function updateConvertedData(req, res, next) {
       }
     }
 
+    // 🔥 RECALCULATE SCHEMES BASED ON NEW ORDERQTY VALUES
+    // Import scheme calculation function dynamically
+    const { applyScheme } = await import("../services/schemeMatcher.js");
+    const SchemeMaster = (await import("../models/schemeMaster.js")).default;
+    
+    // Fetch all schemes from database
+    const allSchemes = await SchemeMaster.find({ isActive: true }).lean();
+    
+    // Recalculate scheme details
+    const updatedSchemeDetails = [];
+    
+    for (const row of rows) {
+      const productCode = row.SAPCODE || row.CODE || "";
+      const orderQty = Number(row.ORDERQTY) || 0;
+      const division = row.DVN || row.DIVISION || "";
+      const itemDesc = row.ITEMDESC || "";
+      
+      // Apply scheme using the existing logic
+      const schemeResult = applyScheme({
+        productCode,
+        orderQty,
+        itemDesc,
+        division,
+        customerCode: row.CODE || "",
+        schemes: allSchemes
+      });
+      
+      if (schemeResult.schemeApplied) {
+        updatedSchemeDetails.push({
+          productCode,
+          productName: itemDesc,
+          orderQty,
+          freeQty: schemeResult.freeQty,
+          schemePercent: schemeResult.schemePercent,
+          division,
+          baseRatio: schemeResult.baseRatio,
+          calculation: schemeResult.calculation
+        });
+        // 🔥 Mark row for styling
+        row._hasScheme = true;
+      } else {
+        row._hasScheme = false;
+      }
+    }
+
     // Update converted data
     upload.convertedData.rows = rows;
+    
+    // 🔥 Update scheme details
+    upload.schemeDetails = updatedSchemeDetails;
+    
+    // Recalculate scheme summary
+    const totalFreeQty = updatedSchemeDetails.reduce((sum, s) => sum + Number(s.freeQty), 0);
+    upload.schemeSummary = {
+      count: updatedSchemeDetails.length,
+      totalFreeQty: totalFreeQty
+    };
 
     // Regenerate Excel file
     const wb = XLSX.utils.book_new();
@@ -381,19 +457,30 @@ export async function updateConvertedData(req, res, next) {
       }
     });
 
-    // Style data rows
-    rows.forEach((row, idx) => {
+      // Style data rows
+      rows.forEach((row, idx) => {
       const excelRow = idx + 1;
       headers.forEach((_, colIdx) => {
         const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
         if (!ws[cellRef]) ws[cellRef] = { v: "" };
         
-        // Apply scheme style if this row has a scheme
-        if (row["Free Qty"] || row["Scheme %"]) {
-          ws[cellRef].s = schemeRowStyle;
-        } else {
-          ws[cellRef].s = normalCellStyle;
+        let style = normalCellStyle;
+        
+        // Use quantity style for ORDERQTY column (center aligned, light yellow default)
+        if (headers[colIdx] === "ORDERQTY") {
+          style = qtyCellStyle;
         }
+
+        // Apply scheme style (Yellow Fill) if this row has a scheme
+        if (row._hasScheme) {
+          // Merge styles: Keep alignment/border from base style, but override fill to Yellow
+          style = {
+            ...style,
+            fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } }
+          };
+        }
+        
+        ws[cellRef].s = style;
       });
     });
 
@@ -411,6 +498,53 @@ export async function updateConvertedData(req, res, next) {
 
     XLSX.utils.book_append_sheet(wb, ws, "Converted Orders");
 
+    // 🔥 Add Scheme Summary Sheet
+    if (updatedSchemeDetails.length > 0) {
+      const schemeSheetData = updatedSchemeDetails.map(s => ({
+        "Product Code": s.productCode,
+        "Product Name": s.productName,
+        "Order Qty": s.orderQty,
+        "Free Qty": s.freeQty,
+        "Applied Scheme": `${s.orderQty}+${s.freeQty}`,
+        "Scheme %": s.schemePercent,
+        "Division": s.division
+      }));
+
+      const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+      
+      // Style header
+      const schemeHeaders = ["Product Code", "Product Name", "Order Qty", "Free Qty", "Applied Scheme", "Scheme %", "Division"];
+      for(let c=0; c<schemeHeaders.length; c++) {
+          const cellRef = XLSX.utils.encode_cell({r:0, c});
+          if(schemeWs[cellRef]) schemeWs[cellRef].s = headerStyle;
+      }
+
+      // 🔥 Style Data Rows (Yellow Fill + Alignment)
+      schemeSheetData.forEach((row, idx) => {
+        const excelRow = idx + 1;
+        schemeHeaders.forEach((colName, colIdx) => {
+          const cellRef = XLSX.utils.encode_cell({r: excelRow, c: colIdx});
+          if(!schemeWs[cellRef]) schemeWs[cellRef] = {v: ""};
+          
+          let style = normalCellStyle;
+          // Center align quantities
+          if (colName === "Order Qty" || colName === "Free Qty" || colName === "Scheme %") {
+               style = qtyCellStyle;
+          }
+          // Apply Yellow Fill
+          style = { ...style, fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } } };
+          schemeWs[cellRef].s = style;
+        });
+      });
+      
+      // column widths
+      schemeWs["!cols"] = [
+          {wch: 15}, {wch: 30}, {wch: 10}, {wch: 10}, {wch: 15}, {wch: 10}, {wch: 15}
+      ];
+
+      XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
+    }
+
     // Save updated file
     const outputFileName = `converted-${id}-${Date.now()}.xlsx`;
     const outputPath = path.join("uploads", outputFileName);
@@ -420,6 +554,9 @@ export async function updateConvertedData(req, res, next) {
 
     // Update upload record
     upload.outputFile = outputFileName;
+    // 🔥 Critical: Update outputFiles list so download uses this new file
+    upload.outputFiles = [outputFileName];
+    
     await upload.save();
 
     res.json({
@@ -427,7 +564,13 @@ export async function updateConvertedData(req, res, next) {
       message: "Converted data updated successfully",
       data: {
         rowsUpdated: rows.length,
-        outputFile: outputFileName
+        outputFile: outputFileName,
+        // 🔥 Return updated scheme details so frontend can refresh
+        schemeDetails: updatedSchemeDetails,
+        schemeSummary: {
+          count: updatedSchemeDetails.length,
+          totalFreeQty
+        }
       }
     });
 

@@ -644,7 +644,11 @@ export function extractProductName(text, qty) {
     // Remove prices (only large amounts or specific price formats like 1957.50)
     // BE CAREFUL: Don't remove small dosage decimals like 2.5 or 0.25
     t = t.replace(/\s*\d{3,}\.\d{2}.*$/," ");  // Remove clear prices (100.00+)
-    t = t.replace(/\s+\d{3,}\s*$/g, "");       // Remove trailing large numbers
+    
+    // 🔥 FIXED: Only remove 4+ digit trailing numbers (likely pack qty or prices)
+    // Preserve 3-digit numbers like 300, 500 which are common strengths
+    // Pattern: "VALPRID CR 300 15" -> keep 300, would remove if we stripped 3-digit
+    t = t.replace(/\s+\d{4,}\s*$/g, "");       // Remove trailing 4+ digit numbers only
     
     // Remove pack patterns
     t = t.replace(/\s+\d+X\d+[A-Z]?\s*$/gi, "");

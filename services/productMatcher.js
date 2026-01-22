@@ -198,21 +198,35 @@ function hasCompatibleStrength(invoiceText, productName) {
 
 
 function hasCompatibleVariant(invoiceText, productName) {
+  // 🔥 EXPANDED: Added MT, H, AT, TRIO, A, AM, D, M, LS, TH and other common pharma variants
   const extract = (text) =>
-    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB)\b/g) || [];
+    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB|MT|H|AT|TRIO|A|AM|D|M|LS|TH|BETA)\b/g) || [];
 
   const inv = extract(invoiceText);
   const prod = extract(productName);
 
-  // STRICT variants must match
-  const strict = ['OD','SR','MR','XL','CR'];
+  // 🔥 STRICT variants must match - these are critical differentiators
+  // MT = Metoprolol combo, H = HCTZ combo, AT = Atorvastatin combo, TRIO = Triple combo
+  // BETA = Beta blocker combo, M = Metformin combo
+  const strict = ['OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS'];
 
   const invStrict = inv.filter(v => strict.includes(v));
   const prodStrict = prod.filter(v => strict.includes(v));
 
+  // 🚨 CRITICAL: If invoice has a strict variant but product doesn't, BLOCK
+  if (invStrict.length > 0 && prodStrict.length === 0) {
+    return false; // Invoice has variant like MT, product doesn't have it
+  }
+  
+  // 🚨 CRITICAL: If product has a strict variant but invoice doesn't, BLOCK
+  if (prodStrict.length > 0 && invStrict.length === 0) {
+    return false; // Product has variant like MT, invoice doesn't have it
+  }
+
+  // If both have strict variants, they must have at least one in common
   if (invStrict.length && prodStrict.length) {
     if (!invStrict.some(v => prodStrict.includes(v))) {
-      return false; // real mismatch
+      return false; // real mismatch (e.g. MT vs H)
     }
   }
 
@@ -240,11 +254,32 @@ function exactMatch(invoiceText, product) {
       .trim();
   };
 
+  // 🔥 NEW: Word-order-flexible normalization
+  const normalizeForWordMatch = (text) => {
+    return text
+      .toUpperCase()
+      .replace(/[-_/]/g, " ")
+      .replace(/(\d+(?:\.\d+)?)\s*(MG|ML|MCG|GM|G)\b/gi, '$1')
+      .replace(/[^A-Z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length > 0)
+      .sort()
+      .join(" ");
+  };
+
   const inv = normalize(invoiceText);
   const prod = normalize(product.productName);
 
   // Direct exact match
   if (inv === prod) return 1.0;
+
+  // 🔥 NEW: Word-order-flexible match (AMLONG MT 25 == AMLONG 25 MT)
+  const invWords = normalizeForWordMatch(invoiceText);
+  const prodWords = normalizeForWordMatch(product.productName);
+  
+  if (invWords === prodWords && invWords.length >= 3) {
+    return 1.0; // Same words, just different order
+  }
 
   // Close match (one contains other)
   if (inv.includes(prod) || prod.includes(inv)) {
@@ -510,14 +545,40 @@ if (
       
       if (candidates.length > 0) {
         console.log(`  💡 Found ${candidates.length} candidates with base "${baseName}"`);
-        // Return null for matchedProduct, but include candidates for manual selection
+        
+        // 🔥 AUTO-SELECT: Pick the best candidate that has compatible strength/variant
+        for (const candidate of candidates) {
+          if (hasCompatibleStrength(rawInvoice, candidate.productName) &&
+              hasCompatibleVariant(rawInvoice, candidate.productName)) {
+            console.log(`  ✅ AUTO-SELECTED: ${candidate.productName} (from candidates)`);
+            return {
+              ...candidate,
+              confidence: 0.75,
+              matchType: "AUTO_CANDIDATE",
+              boxPack: candidate.boxPack || candidate.pack || 0
+            };
+          }
+        }
+        
+        // 🔥 LENIENT: If only one candidate exists, auto-select it anyway
+        if (candidates.length === 1) {
+          console.log(`  ✅ AUTO-SELECTED (single candidate): ${candidates[0].productName}`);
+          return {
+            ...candidates[0],
+            confidence: 0.65,
+            matchType: "SINGLE_CANDIDATE",
+            boxPack: candidates[0].boxPack || candidates[0].pack || 0
+          };
+        }
+        
+        // Multiple candidates but none passed checks - return for manual selection
         return {
           matchedProduct: null,
           candidates: candidates.map(c => ({
             ...c,
             boxPack: c.boxPack || c.pack || 0
           })),
-          reason: `No exact match for "${invoiceDesc}". Please select from similar products.`
+          reason: `Multiple matches for "${invoiceDesc}". Please select.`
         };
       }
     }
@@ -525,17 +586,19 @@ if (
     return null;
   }
 
-  // 🔥 CRITICAL: Lowered threshold
-  const MIN_SCORE = 0.30; // Was 0.35-0.45
+  // 🔥 LENIENT: Very low threshold - accept almost any match
+  const MIN_SCORE = 0.20; // Was 0.30
 
   if (bestScore < MIN_SCORE) {
     console.log(`  ❌ Best match too low: ${best.productName} (${bestScore.toFixed(2)} < ${MIN_SCORE})`);
     
-    // 🔥 NEW: Return as candidate instead of failing completely
+    // 🔥 LENIENT: Auto-select even low-confidence matches
+    console.log(`  ✅ AUTO-SELECTED (low confidence): ${best.productName}`);
     return {
-      matchedProduct: null,
-      candidates: [{ ...best, boxPack: best.boxPack || best.pack || 0 }],
-      reason: `Low confidence match (${(bestScore * 100).toFixed(0)}%). Please confirm.`
+      ...best,
+      confidence: bestScore,
+      matchType: matchType + "_LOW",
+      boxPack: best.boxPack || best.pack || 0
     };
   }
 
