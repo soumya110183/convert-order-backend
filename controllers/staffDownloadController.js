@@ -444,7 +444,10 @@ export async function updateConvertedData(req, res, next) {
 
     // Regenerate Excel file
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(rows, { header: upload.convertedData.headers });
+    
+    // 🔥 Remove internal flags (_hasScheme) before converting to sheet
+    const cleanRows = rows.map(({ _hasScheme, ...rest }) => rest);
+    const ws = XLSX.utils.json_to_sheet(cleanRows, { header: upload.convertedData.headers });
 
     // Apply styling (same as original conversion)
     const headers = upload.convertedData.headers;
@@ -505,7 +508,7 @@ export async function updateConvertedData(req, res, next) {
         "Product Name": s.productName,
         "Order Qty": s.orderQty,
         "Free Qty": s.freeQty,
-        "Applied Scheme": `${s.orderQty}+${s.freeQty}`,
+        // Removed "Applied Scheme" as requested (redundant with color/qty)
         "Scheme %": s.schemePercent,
         "Division": s.division
       }));
@@ -513,7 +516,7 @@ export async function updateConvertedData(req, res, next) {
       const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
       
       // Style header
-      const schemeHeaders = ["Product Code", "Product Name", "Order Qty", "Free Qty", "Applied Scheme", "Scheme %", "Division"];
+      const schemeHeaders = ["Product Code", "Product Name", "Order Qty", "Free Qty", "Scheme %", "Division"];
       for(let c=0; c<schemeHeaders.length; c++) {
           const cellRef = XLSX.utils.encode_cell({r:0, c});
           if(schemeWs[cellRef]) schemeWs[cellRef].s = headerStyle;
@@ -539,7 +542,7 @@ export async function updateConvertedData(req, res, next) {
       
       // column widths
       schemeWs["!cols"] = [
-          {wch: 15}, {wch: 30}, {wch: 10}, {wch: 10}, {wch: 15}, {wch: 10}, {wch: 15}
+          {wch: 15}, {wch: 30}, {wch: 10}, {wch: 10}, {wch: 10}, {wch: 15}
       ];
 
       XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");

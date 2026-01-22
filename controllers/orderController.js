@@ -651,12 +651,32 @@ if (hasSheets) {
           "Product Name": s.productName,
           "Order Qty": s.orderQty,
           "Free Qty": s.freeQty,
-          "Applied Scheme": s.appliedScheme,
           "Scheme %": s.schemePercent,
           "Division": s.division
         }));
 
         const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+        
+        // Style Scheme Summary
+        const schemeHeaders = Object.keys(schemeSheetData[0]);
+        schemeHeaders.forEach((_, c) => {
+            const cellRef = XLSX.utils.encode_cell({r:0, c});
+            if(schemeWs[cellRef]) schemeWs[cellRef].s = headerStyle;
+        });
+        
+        schemeSheetData.forEach((row, idx) => {
+            const excelRow = idx + 1;
+            schemeHeaders.forEach((colName, colIdx) => {
+                const cellRef = XLSX.utils.encode_cell({r: excelRow, c: colIdx});
+                if(!schemeWs[cellRef]) schemeWs[cellRef] = {v: ""};
+                let style = normalCellStyle;
+                if (colName === "Order Qty" || colName === "Free Qty" || colName === "Scheme %") style = qtyCellStyle;
+                style = { ...style, fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } } };
+                schemeWs[cellRef].s = style;
+            });
+        });
+        schemeWs["!cols"] = [{wch: 15}, {wch: 30}, {wch: 10}, {wch: 10}, {wch: 10}, {wch: 15}];
+
         XLSX.utils.book_append_sheet(wb1, schemeWs, "Scheme Summary");
       }
 
@@ -710,12 +730,32 @@ if (hasSheets) {
           "Product Name": s.productName,
           "Order Qty": s.orderQty,
           "Free Qty": s.freeQty,
-          "Applied Scheme": s.appliedScheme,
           "Scheme %": s.schemePercent,
           "Division": s.division
         }));
 
         const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+        
+        // Style Scheme Summary
+        const schemeHeaders = Object.keys(schemeSheetData[0]);
+        schemeHeaders.forEach((_, c) => {
+            const cellRef = XLSX.utils.encode_cell({r:0, c});
+            if(schemeWs[cellRef]) schemeWs[cellRef].s = headerStyle;
+        });
+        
+        schemeSheetData.forEach((row, idx) => {
+            const excelRow = idx + 1;
+            schemeHeaders.forEach((colName, colIdx) => {
+                const cellRef = XLSX.utils.encode_cell({r: excelRow, c: colIdx});
+                if(!schemeWs[cellRef]) schemeWs[cellRef] = {v: ""};
+                let style = normalCellStyle;
+                if (colName === "Order Qty" || colName === "Free Qty" || colName === "Scheme %") style = qtyCellStyle;
+                style = { ...style, fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } } };
+                schemeWs[cellRef].s = style;
+            });
+        });
+        schemeWs["!cols"] = [{wch: 15}, {wch: 30}, {wch: 10}, {wch: 10}, {wch: 10}, {wch: 15}];
+
         XLSX.utils.book_append_sheet(wb2, schemeWs, "Scheme Summary");
       }
 
@@ -764,12 +804,32 @@ if (hasSheets) {
           "Product Name": s.productName,
           "Order Qty": s.orderQty,
           "Free Qty": s.freeQty,
-          "Applied Scheme": s.appliedScheme,
           "Scheme %": s.schemePercent,
           "Division": s.division
         }));
 
         const schemeWs = XLSX.utils.json_to_sheet(schemeSheetData);
+        
+        // Style Scheme Summary
+        const schemeHeaders = Object.keys(schemeSheetData[0]);
+        schemeHeaders.forEach((_, c) => {
+            const cellRef = XLSX.utils.encode_cell({r:0, c});
+            if(schemeWs[cellRef]) schemeWs[cellRef].s = headerStyle;
+        });
+        
+        schemeSheetData.forEach((row, idx) => {
+            const excelRow = idx + 1;
+            schemeHeaders.forEach((colName, colIdx) => {
+                const cellRef = XLSX.utils.encode_cell({r: excelRow, c: colIdx});
+                if(!schemeWs[cellRef]) schemeWs[cellRef] = {v: ""};
+                let style = normalCellStyle;
+                if (colName === "Order Qty" || colName === "Free Qty" || colName === "Scheme %") style = qtyCellStyle;
+                style = { ...style, fill: { patternType: "solid", fgColor: { rgb: "FFFF00" } } };
+                schemeWs[cellRef].s = style;
+            });
+        });
+        schemeWs["!cols"] = [{wch: 15}, {wch: 30}, {wch: 10}, {wch: 10}, {wch: 10}, {wch: 15}];
+
         XLSX.utils.book_append_sheet(wb, schemeWs, "Scheme Summary");
       }
 
