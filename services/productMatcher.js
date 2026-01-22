@@ -9,7 +9,7 @@
    Solution: Only remove NOISE, keep product identity
 ===================================================== */
 
-import { extractStrength, normalize } from "../utils/extractionUtils.js";
+import { extractStrength } from "../utils/extractionUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
 import { normalizeProductName, normalizeForFuzzyMatch } from "../utils/productNormalizer.js";
 
