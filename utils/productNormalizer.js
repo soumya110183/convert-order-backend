@@ -134,7 +134,7 @@ export function normalizeProductName(productName, options = {}) {
   
   // STEP 6: Normalize punctuation and spacing
   normalized = normalized
-    .replace(/\s*-\s*/g, '-')      // "DOLO - 650" → "DOLO-650"
+    .replace(/-/g, ' ')             // "DOLO - 650" → "DOLO 650"
     .replace(/\s+/g, ' ')           // Multiple spaces → single space
     .replace(/[^\w\s\-\/\.]/g, ' ')   // 🔥 FIXED: Allow dots (.) for decimals like 2.5
     .replace(/\s+\./g, ' .')        // Fix Orphan dots if any

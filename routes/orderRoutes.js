@@ -3,6 +3,8 @@
 // =====================================================
 import express from "express";
 import multer from "multer";
+import path from "path";
+import fs from "fs";
 
 import {
   extractOrderFields,
@@ -10,7 +12,8 @@ import {
   getOrderHistory,
   getOrderById,
   checkSchemes,
-  getProductSchemes
+  getProductSchemes,
+  generateDivisionReport
 } from "../controllers/orderController.js";
 
 import {
@@ -48,7 +51,9 @@ router.use(protect);
 router.post("/extract", upload.single("file"), extractOrderFields);
 
 // Step 2: Convert
+// Step 2: Convert
 router.post("/convert", convertOrders);
+router.post("/convert/division-report", generateDivisionReport);
 
 // Step 2b: Check Schemes
 router.post("/check-schemes", checkSchemes);
@@ -57,6 +62,19 @@ router.post("/check-schemes", checkSchemes);
 router.get("/history", getOrderHistory);
 
 // Step 4: Download (MOST SPECIFIC FIRST)
+router.get("/download/file/:filename", (req, res) => {
+  const { filename } = req.params;
+  // Simple security check: prevent directory traversal
+  if (filename.includes("..") || !filename.endsWith(".xlsx")) {
+    return res.status(403).send("Invalid filename");
+  }
+  const filePath = path.resolve("uploads", filename);
+  if (fs.existsSync(filePath)) {
+    res.download(filePath);
+  } else {
+    res.status(404).send("File not found");
+  }
+});
 router.get("/download/:id/:type", downloadConvertedFile);
 router.get("/download/:id", downloadConvertedFile);
 router.get("/:id/scheme-file", downloadSchemeFile);

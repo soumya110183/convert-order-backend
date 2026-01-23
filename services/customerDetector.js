@@ -49,8 +49,8 @@ export function detectCustomerFromInvoice(rows = []) {
     const total = line.match(/[A-Z]/gi)?.length || 0;
     if (total === 0 || letters / total < 0.7) continue;
 
-    // Must look like business name
-    if (!/\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|MEDICAL|DISTRIBUTORS?|ENTERPRISES?)\b/i.test(line)) {
+    // Must look like business name - 🔥 EXPANDED: Added more common keywords
+    if (!/\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|MEDICAL|DISTRIBUTORS?|ENTERPRISES?|DRUG\s*HOUSE|DRUGS?|WHOLESALE|RETAIL|STORES?|MART|DEPOT|STOCKIST|SURGICALS?|SUPPLIERS?|CO\.?|CORPORATION|CHEMISTS?)\b/i.test(line)) {
       continue;
     }
 
@@ -69,9 +69,9 @@ export function detectCustomerFromInvoice(rows = []) {
   ===================================================== */
 
   const explicitPatterns = [
-    /M\/S\s+([A-Z][A-Z\s&.,'-]+(?:PHARMA|PHARMACY|MEDICAL|DRUGS?|LINES|STORES?|AGENCIES?|TRADERS?|DISTRIBUTORS?|ENTERPRISES?|PVT|LTD|LIMITED))/i,
+    /M\/S\s+([A-Z][A-Z\s&.,'-]+(?:PHARMA|PHARMACY|MEDICAL|DRUGS?|DRUG\s*HOUSE|LINES|STORES?|AGENCIES?|TRADERS?|DISTRIBUTORS?|ENTERPRISES?|WHOLESALE|STOCKIST|SURGICALS?|CHEMISTS?|PVT|LTD|LIMITED))/i,
     /(?:CUSTOMER|CLIENT|BILL\s+TO|SHIP\s+TO|SOLD\s+TO)\s*(?:NAME)?[:\s]+([A-Z][A-Z\s&.,'-]+)/i,
-    /(?:TO|CUSTOMER)[:\s]+([A-Z][A-Z\s&.,'-]+(?:PHARMA|PHARMACY|MEDICAL|DRUGS?|LINES|STORES?|AGENCIES?|TRADERS?|DISTRIBUTORS?|ENTERPRISES?|CORPORATION|PRIVATE|LIMITED))/i
+    /(?:TO|CUSTOMER)[:\s]+([A-Z][A-Z\s&.,'-]+(?:PHARMA|PHARMACY|MEDICAL|DRUGS?|DRUG\s*HOUSE|LINES|STORES?|AGENCIES?|TRADERS?|DISTRIBUTORS?|ENTERPRISES?|WHOLESALE|STOCKIST|SURGICALS?|CHEMISTS?|CORPORATION|PRIVATE|LIMITED))/i
   ];
 
   for (const pattern of explicitPatterns) {

@@ -42,7 +42,14 @@ export function splitProduct(raw = "") {
   // STEP 4: Remove strength from text to isolate name
   if (strength) {
     // Remove the exact strength pattern found
-    const strengthPattern = detectedStrength.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Remove the exact strength pattern found
+    let strengthPattern = detectedStrength.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    
+    // 🔥 Fix: Allow spaces around slash for combo strengths (50/500 matches 50 / 500)
+    if (strengthPattern.includes("/")) {
+      strengthPattern = strengthPattern.replace(/\//g, "\\s*\\/\\s*");
+    }
+
     text = text.replace(new RegExp(`\\b${strengthPattern}\\b`, "gi"), " ");
   }
 

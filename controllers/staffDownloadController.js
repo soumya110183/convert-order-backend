@@ -399,6 +399,7 @@ export async function updateConvertedData(req, res, next) {
       const productCode = row.SAPCODE || row.CODE || "";
       const orderQty = Number(row.ORDERQTY) || 0;
       const division = row.DVN || row.DIVISION || "";
+      // Trust frontend data
       const itemDesc = row.ITEMDESC || "";
       
       // Apply scheme using the existing logic

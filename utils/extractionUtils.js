@@ -32,8 +32,19 @@ export function extractStrength(text) {
   // STEP 1: Combo dosage (875/125, 50/500, 12.5/500, 10/5)
   const combo = upper.match(/\b(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)\s*(MG|ML|MCG)?\b/);
   if (combo) {
+    let numerator = combo[1];
+    let denominator = combo[2];
     const unit = combo[3] || "MG";
-    return `${combo[1]}/${combo[2]}${unit}`.replace(/\s+/g, "");
+
+    // 🔥 FIX: Handle concatenated pack size (e.g. 50/50015 -> 50/500)
+    // If denominator is 500xx, 850xx, 1000xx, treat as concatenated
+    if (denominator.length > 3 && !VALID_STRENGTHS.has(denominator)) {
+       if (denominator.startsWith("500")) denominator = "500";
+       else if (denominator.startsWith("850")) denominator = "850";
+       else if (denominator.startsWith("1000")) denominator = "1000";
+    }
+
+    return `${numerator}/${denominator}${unit}`.replace(/\s+/g, "");
   }
 
   // STEP 2: Number + Unit (500MG, 2.5MG, 10ML) - HIGHEST CONFIDENCE

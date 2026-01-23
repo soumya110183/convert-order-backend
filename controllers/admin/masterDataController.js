@@ -35,7 +35,10 @@ function normalizeMedicalTerms(str = "") {
     .replace(/\bSUSP\b/g, "SUSPENSION")
     .replace(/\bINJ\b/g, "INJECTION")
     .replace(/\bTAB\b/g, "TABLET")
-    .replace(/\bCAP\b/g, "CAPSULE");
+    .replace(/\bCAP\b/g, "CAPSULE")
+    .replace(/-/g, " ")       // 🔥 Fix: Treat hyphen as space
+    .replace(/\s+/g, " ")     // Collapse spaces
+    .trim();
 }
 
 const findSheet = (sheets, keywords) =>

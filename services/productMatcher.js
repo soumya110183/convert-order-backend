@@ -11,7 +11,7 @@
 
 import { extractStrength } from "../utils/extractionUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
-import { normalizeProductName, normalizeForFuzzyMatch } from "../utils/productNormalizer.js";
+import { normalizeProductName } from "../utils/productNormalizer.js";
 
 // 🔥 NEW: Common typos in medical product names
 const COMMON_TYPOS = {
@@ -198,17 +198,17 @@ function hasCompatibleStrength(invoiceText, productName) {
 
 
 function hasCompatibleVariant(invoiceText, productName) {
-  // 🔥 EXPANDED: Added MT, H, AT, TRIO, A, AM, D, M, LS, TH and other common pharma variants
+  // 🔥 EXPANDED: Added MT, H, AT, TRIO, A, AM, D, M, LS, TH, DC and other common pharma variants
   const extract = (text) =>
-    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB|MT|H|AT|TRIO|A|AM|D|M|LS|TH|BETA)\b/g) || [];
+    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB|MT|H|AT|TRIO|A|AM|D|M|LS|TH|BETA|DC)\b/g) || [];
 
   const inv = extract(invoiceText);
   const prod = extract(productName);
 
   // 🔥 STRICT variants must match - these are critical differentiators
   // MT = Metoprolol combo, H = HCTZ combo, AT = Atorvastatin combo, TRIO = Triple combo
-  // BETA = Beta blocker combo, M = Metformin combo
-  const strict = ['OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS'];
+  // BETA = Beta blocker combo, M = Metformin combo, DC = Diclofenac/combo
+  const strict = ['OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS', 'DC'];
 
   const invStrict = inv.filter(v => strict.includes(v));
   const prodStrict = prod.filter(v => strict.includes(v));

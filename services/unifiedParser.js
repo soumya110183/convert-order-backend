@@ -65,7 +65,7 @@ const INVALID_PRODUCT_PATTERNS = [
   /^\d+\s*TAB$/i,
   /^\d+\s*CAP$/i,
   /^[A-Z]{1,2}\s*\d+$/,
-  /^\d+$/,
+  /^\d{1,4}$/,          // 🔥 ENHANCED: Block standalone small numbers (order numbers, IDs, etc.) 1-4 digits
   /\bDATE\s+\d{1,2}\b/i,
   /\bORDER\s*NO\b/i,
   /\bPOD[-\s]?\d+/i,
@@ -74,7 +74,26 @@ const INVALID_PRODUCT_PATTERNS = [
   /\bCHALLAN\b/i,
   /\bPURCHASE\s*ORDER\b/i,
   /\bPO\s*NO\b/i,
-  /\bNOV\b|\bDEC\b|\bJAN\b|\bFEB\b/i
+  /\bNOV\b|\bDEC\b|\bJAN\b|\bFEB\b/i,
+  /^ORDER\s*DT/i,        // 🔥 NEW: "ORDER DT", "Order Dt."
+  /^COMPANY\b/i,         // 🔥 NEW: Company names
+  /^COMPAY\b/i,          // 🔥 NEW: Typo "COMPAY" (seen in invoices)
+  // 🔥 FOOTER PATTERNS: Common disclaimers and notes at bottom of invoices
+  /^CANCEL\b/i,          // "Cancel all our pending orders"
+  /^DO\s+NOT\b/i,        // "Do not execute any telephonic orders"
+  /^\d+\s+F\s*DO\b/i,    // "1 FDo not execute..." (common footer format)
+  /^\d+\s+F\b/i,         // "3 F" (footer marker)
+  /^SY\s*CANCEL\b/i,     // "SY Cancel" (footer notes)
+  /\bAUTHORI[SZ]ED\s+SIGNATURE\b/i,  // "Authorised Signature"
+  /\bUSED\s+IT\s+TIME\b/i,           // "Used it Time: A"
+  /^USER\b/i,            // "User it Time", "User"
+  /^USED\b/i,            // "Used it Time"
+  /\bUSER\s+IT\s+TIME\b/i,           // "User it Time: A" (variation)
+  /^TIME[\s:]/i,         // "Time: A", "Time:"
+  /\bSIGNATURE\b/i,      // Generic signature line
+  /\bREPRESENTATIVE/i,   // "Representatives"
+  /\bTELEPHONIC\s+ORDER/i, // "telephonic orders"
+  /\bPENDING\s+ORDER/i   // "pending orders"
 ];
 
 function isInvalidProductName(text) {
@@ -637,7 +656,27 @@ export function extractProductName(text, qty) {
     // Reversed format: qty is BEFORE product, already removed
     // Normal format: qty is AFTER product, needs removal
     if (!hasEarlyPrice && qty) {
-      t = t.replace(new RegExp(`\\b${qty}\\b.*$`), "");
+      // 🔥 FIX: Check for duplicate quantity numbers (Strength == Qty case)
+      // e.g. "AVAS 20 ... 20" (Qty=20). First 20 is strength, second is qty.
+      const qtyPattern = new RegExp(`\\b${qty}\\b`, 'g');
+      const matches = t.match(qtyPattern);
+      
+      if (matches && matches.length > 1) {
+         // Multiple occurrences: Cut from the SECOND occurrence
+         let regex = new RegExp(`\\b${qty}\\b`, 'g');
+         let match;
+         let count = 0;
+         while ((match = regex.exec(t)) !== null) {
+           count++;
+           if (count === 2) {
+              t = t.substring(0, match.index);
+              break;
+           }
+         }
+      } else {
+         // Single occurrence: Cut from the first occurrence (standard)
+         t = t.replace(new RegExp(`\\b${qty}\\b.*$`), "");
+      }
     }
     
     // Remove prices and large numbers
@@ -663,6 +702,12 @@ export function extractProductName(text, qty) {
     const productWords = [];
     let foundStrength = false;
     
+    // Valid pharma strengths - same list as in cleanExtractedProductName
+    const VALID_STRENGTHS = [
+      0.2, 0.25, 0.3, 0.5, 1, 2, 2.5, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 
+      100, 120, 150, 200, 250, 300, 325, 400, 500, 625, 650, 750, 875, 1000, 1500, 2000
+    ];
+    
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
       
@@ -674,8 +719,15 @@ export function extractProductName(text, qty) {
       
       // If it's a number
       if (/^\d+(\.\d+)?$/.test(w)) {
-        // If we haven't found a strength yet, this is likely it
-        if (!foundStrength) {
+        const numVal = parseFloat(w);
+        
+        // If this is a valid pharma strength, keep it
+        if (VALID_STRENGTHS.includes(numVal)) {
+          productWords.push(w);
+          foundStrength = true;
+        } else if (!foundStrength) {
+          // Not a valid strength but we haven't found one yet
+          // Could be a non-standard strength, keep it tentatively
           productWords.push(w);
           foundStrength = true;
         } else {
@@ -1146,6 +1198,9 @@ function cleanExtractedProductName(raw = "") {
   
   // Step 6: Remove "SUSP." but keep other abbreviations
   cleaned = cleaned.replace(/\bSUSP\./gi, "SUSPENSION");
+
+  // 🔥 NEW: Replace hyphens with spaces (Requested by user: MICRODOX-LBX -> MICRODOX LBX)
+  cleaned = cleaned.replace(/-/g, " ");
   cleaned = cleaned.replace(/\bSYP\./gi, "SYRUP");
 
   // Step 6b: Remove standard pack patterns (15S, 1X10)
@@ -1172,8 +1227,22 @@ function cleanExtractedProductName(raw = "") {
 
   // Case D: Double number heuristic (e.g. "50 15" -> "50", "2.5 15" -> "2.5")
   cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s+(\d+)$/, (match, p1, p2) => {
-      const n2 = parseInt(p2, 10);
-      if (n2 < 100) return p1; // Remove p2 (pack)
+      const strength = parseFloat(p1);
+      const trailing = parseInt(p2, 10);
+      
+      // Valid pharma strengths
+      const VALID_STRENGTHS = [
+        0.2, 0.25, 0.3, 0.5, 1, 2, 2.5, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 
+        100, 120, 150, 200, 250, 300, 325, 400, 500, 625, 650, 750, 875, 1000, 1500, 2000
+      ];
+      
+      // If first number is a valid strength AND second is likely pack (< 100)
+      // Keep only the first number (strength)
+      if (VALID_STRENGTHS.includes(strength) && trailing < 100) {
+        return p1; // Remove p2 (pack size)
+      }
+      
+      // Otherwise, keep both numbers (don't modify)
       return match; 
   });
 
@@ -1226,6 +1295,12 @@ function extractFromExcelColumns(rows, columnMap) {
     
     // Skip header-like rows
     if (/^(item|product|name|description|qty|quantity)/i.test(itemName)) {
+      continue;
+    }
+    
+    // 🔥 ENHANCED: Skip invalid product names (order numbers, headers, etc.)
+    if (isInvalidProductName(itemName)) {
+      console.log(`  ⚠️  Row ${i + 1}: Invalid product name - "${itemName}"`);
       continue;
     }
     
@@ -1604,6 +1679,26 @@ function parseExcel(file) {
     const text = failedRow.text;
     const qty = extractQuantity(text);
     
+    // 🔥 CRITICAL: Skip invalid product names (headers, footers, order numbers)
+    if (isInvalidProductName(text)) {
+      continue;
+    }
+    
+    // 🔥 CRITICAL: Skip division headers
+    if (/MICRO[-\s].*?[-\s]DIV/i.test(text)) {
+      continue;
+    }
+    
+    // 🔥 CRITICAL: Skip total/summary lines
+    if (/\b(TOTAL|VAL\.|DIVISION|SUMMARY|SUBTOTAL)\b/i.test(text)) {
+      continue;
+    }
+    
+    // 🔥 CRITICAL: Skip terms and conditions
+    if (/\b(TERMS|CONDITIONS|ENCLOSED|CHEQUE)\b/i.test(text)) {
+      continue;
+    }
+    
     // TIER 2: Structural patterns
     const hasBrandNumber = /\b[A-Z]{3,}\s+\d{1,4}\b/i.test(text);
     const words = text.toUpperCase().split(/\s+/).filter(w => w.length > 1);
@@ -1612,7 +1707,19 @@ function parseExcel(file) {
     
     if (hasBrandNumber || hasMultipleCaps || qty) {
       const itemDesc = extractProductName(text, qty);
-      if (itemDesc && itemDesc.length >= 3 && !isHardJunk(itemDesc)) {
+      
+      // 🔥 FINAL VALIDATION: Check extracted name
+      if (!itemDesc || itemDesc.length < 3) {
+        continue;
+      }
+      
+      // 🔥 FINAL VALIDATION: Check if extracted name is invalid
+      if (isInvalidProductName(itemDesc)) {
+        continue;
+      }
+      
+      // 🔥 FINAL VALIDATION: Must look like a product
+      if (!isHardJunk(itemDesc)) {
         console.log(`  ✅ [TIER FALLBACK] Row ${failedRow.row}: "${itemDesc}" | Qty: ${qty ?? "MISSING"}`);
         dataRows.push({
           ITEMDESC: itemDesc,
@@ -1680,7 +1787,9 @@ function parseText(file) {
       continue;
     }
     
-    if (!looksLikeProduct(itemDesc)) {
+    // 🔥 FIX: If extracted name looks weak (e.g. "DOLO 1000" has no unit/form), 
+    // check the original line for context clues (like "10's")
+    if (!looksLikeProduct(itemDesc) && !looksLikeProduct(line)) {
       console.log(`  ❌ Row ${i + 1}: Failed extraction (Not product-like) "${itemDesc}"`);
       failed.push({ row: i + 1, text: line, qty, reason: 'Not product-like' });
       continue;

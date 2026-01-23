@@ -1,9 +1,11 @@
 // services/schemeMatcher.js - FIXED FOR PROPORTIONAL SCALING
 
 function normalize(text = "") {
-  return String(text).toUpperCase().trim()
-    .replace(/[-_/]/g, " ")  ;
-  
+  return String(text)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, " ") // Replace all punctuation with space
+    .replace(/\s+/g, " ")       // Collapse spaces
+    .trim();
 }
 
 /**

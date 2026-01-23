@@ -554,7 +554,7 @@ if (hasSheets) {
   CODE: customer.customerCode,
   "CUSTOMER NAME": customer.customerName,
   SAPCODE: productCode,       // ✅ correct
-  ITEMDESC: row.ITEMDESC,
+  ITEMDESC: (req.body.dataRows ? row.ITEMDESC : (row.manualProduct?.name || row.matchedProduct?.name || row.ITEMDESC || "")).trim(),
   ORDERQTY: qty,
   "BOX PACK": boxPack,
   PACK: pack,
@@ -847,9 +847,11 @@ if (hasSheets) {
     upload.convertedData = {
       headers: TEMPLATE_COLUMNS, // Set exact template headers
       rows: output.map(row => { 
-        const { _hasScheme, _upsell, _originalIdx, hasScheme, ...cleanRow } = row;
-        // Keep _upsell if present, but exclude it from Excel columns
-        if (_upsell) cleanRow._upsell = _upsell;
+        // 🔥 Keep _hasScheme for future reports (styling)
+        const { _originalIdx, hasScheme, ...cleanRow } = row;
+        // Keep _upsell if present
+        if (row._upsell) cleanRow._upsell = row._upsell;
+        if (row._hasScheme) cleanRow._hasScheme = true;
         return cleanRow; 
       })
     };
@@ -1093,11 +1095,129 @@ export const getProductSchemes = async (req, res, next) => {
     }
 };
 
+export const generateDivisionReport = async (req, res, next) => {
+  try {
+    const { uploadId, dataRows, customerCode, division } = req.body;
+
+    const upload = await OrderUpload.findOne({ 
+      _id: uploadId, 
+      userId: req.user.id 
+    });
+
+    if (!upload) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    // Use provided rows (frontend state) OR fallback to DB
+    const rowsToProcess = dataRows || upload.convertedData?.rows || upload.extractedData?.dataRows;
+
+    if (!rowsToProcess || rowsToProcess.length === 0) {
+       return res.status(400).json({ success: false, message: "No data available to generate report" });
+    }
+
+    // Filter if division provided
+    let finalRows = [...rowsToProcess];
+    if (division) {
+       finalRows = finalRows.filter(r => (r.DVN || "").toUpperCase() === division.toUpperCase());
+    }
+
+    // Sort rows by Division
+    const sortedRows = finalRows.sort((a, b) => {
+      const divA = (a.DVN || 'ZZZZ').toUpperCase();
+      const divB = (b.DVN || 'ZZZZ').toUpperCase();
+      return divA.localeCompare(divB);
+    });
+
+    // Use provided customer code OR fallback to upload record OR 'UNKNOWN'
+    const finalCustomerCode = customerCode || upload.customerCode || 'UNKNOWN';
+
+    // Generate Excel
+    const divLabel = division ? `-${division.replace(/[^a-z0-9]/gi, '')}` : '-ALL';
+    const fileName = `division-report${divLabel}-${finalCustomerCode}-${Date.now()}.xlsx`;
+    const filePath = path.join("uploads", fileName);
+    const wb = XLSX.utils.book_new();
+
+    const wsData = sortedRows.map(row => {
+      // 🔥 Strict column filtering to remove junk (matchReason, etc)
+      const cleanRow = {};
+      TEMPLATE_COLUMNS.forEach(col => {
+          let val = row[col] || "";
+          cleanRow[col] = val;
+      });
+      return cleanRow;
+    });
+
+    const ws = XLSX.utils.json_to_sheet(wsData, { header: TEMPLATE_COLUMNS });
+
+    // Apply Styles
+    TEMPLATE_COLUMNS.forEach((_, colIdx) => {
+      const cellRef = XLSX.utils.encode_cell({ r: 0, c: colIdx });
+      if (ws[cellRef]) ws[cellRef].s = headerStyle;
+    });
+
+    sortedRows.forEach((row, idx) => {
+      const excelRow = idx + 1;
+      TEMPLATE_COLUMNS.forEach((col, colIdx) => {
+        const cellRef = XLSX.utils.encode_cell({ r: excelRow, c: colIdx });
+        if (!ws[cellRef]) ws[cellRef] = { v: "" };
+        let style = normalCellStyle;
+        if (col === "ORDERQTY") style = qtyCellStyle;
+        if (row._hasScheme || row.hasScheme) style = { ...style, fill: schemeRowStyle.fill };
+        ws[cellRef].s = style;
+      });
+    });
+
+    ws["!cols"] = [{ wch: 14 }, { wch: 28 }, { wch: 14 }, { wch: 40 }, { wch: 10 }, { wch: 10 }, { wch: 10 }, { wch: 10 }];
+    
+    XLSX.utils.book_append_sheet(wb, ws, "Division Report");
+    XLSX.writeFile(wb, filePath);
+
+    console.log(`✅ Generated Division Report: ${fileName}`);
+
+    // 🔥 FIX: Persist status and files so it shows in dashboard
+    upload.status = "CONVERTED";
+    upload.outputFile = fileName;
+    
+    // Add to outputFiles if not already present
+    if (!upload.outputFiles) upload.outputFiles = [];
+    if (!upload.outputFiles.includes(fileName)) {
+       upload.outputFiles.push(fileName);
+    }
+
+    // Persist the latest data from frontend
+    if (dataRows && dataRows.length > 0) {
+        upload.convertedData = {
+           headers: TEMPLATE_COLUMNS,
+           rows: dataRows
+        };
+        upload.recordsProcessed = dataRows.length;
+    }
+
+    // Update customer info if we have it
+    if (customerCode) {
+        upload.customerCode = customerCode;
+        // Optionally update name if available in request, but code is most critical
+    }
+
+    await upload.save();
+
+    res.json({
+      success: true,
+      downloadUrl: `/api/orders/download/file/${fileName}` 
+    });
+
+  } catch (err) {
+    console.error("❌ Division Report Error:", err);
+    next(err);
+  }
+};
+
 export default {
   extractOrderFields,
   convertOrders,
   getOrderById,
   getOrderHistory,
   checkSchemes,
-  getProductSchemes
+  getProductSchemes,
+  generateDivisionReport
 };
