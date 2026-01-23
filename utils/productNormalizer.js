@@ -139,6 +139,18 @@ export function normalizeProductName(productName, options = {}) {
     .replace(/[^\w\s\-\/\.]/g, ' ')   // 🔥 FIXED: Allow dots (.) for decimals like 2.5
     .replace(/\s+\./g, ' .')        // Fix Orphan dots if any
     .trim();
+
+  // STEP 7: Split Concatenated Variants (e.g. "30SR" -> "30 SR")
+  // Common pharma variants
+  const VARIANTS = [
+    "SR", "OD", "CR", "ER", "XL", "DS", "LS", "XR", "MR", "HS", "AM", "PM", 
+    "PRO", "ADVANCE", "FORTE", "PLUS", "TRIO", "CV", "CT", "MT", "DM", "GM",
+    "LBX", "LB", "H", "LV", "HV", "DC", "TH"
+  ];
+  const variantRegex = new RegExp(`(\\d+)(${VARIANTS.join('|')})\\b`, 'gi');
+  normalized = normalized.replace(variantRegex, '$1 $2');
+  
+  return normalized;
   
   return normalized;
 }

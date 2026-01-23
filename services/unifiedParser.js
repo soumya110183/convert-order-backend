@@ -549,7 +549,8 @@ function extractQuantityFromMergedLine(text) {
     // 🔥 NEW: Block common strength numbers if they appear to be strength
     // (e.g. DOLO 650 500.00 -> 650 is strength, 500 is amount)
     // If val is a common strength and preceded by letters, skip it
-    if ([500, 650, 250, 1000, 125, 300, 30, 40, 20, 10, 5].includes(val)) {
+    // 🔥 UPDATED: Added 25, 50, 75, 80, 100, 150, 200, 400
+    if ([500, 650, 250, 1000, 125, 300, 30, 40, 20, 10, 5, 25, 50, 60, 75, 80, 100, 150, 200, 400].includes(val)) {
         // Strict check: Preceded by product name part?
         // DOLO 650 -> '650' preceded by 'DOLO' (letters)
         if (prev && /^[A-Z\-]+$/i.test(prev)) {
@@ -561,11 +562,24 @@ function extractQuantityFromMergedLine(text) {
     // ✅ Valid quantity: 1-99999 (increased range)
     // Return FIRST valid quantity found (closest to amount)
     if (val >= 1 && val <= 99999) {
-      // 🔥 FINAL CHECK: valid quantity shouldn't be too close to amount if amount is also small
-      // But typically amount is float.
       console.log(`  [MERGED_QTY] Found ${val} at position ${i}`);
       return val;
     }
+  }
+  
+  // 🔥 FIX: If backward scan failed, scan FORWARD from amount
+  // (e.g. "Amount 250.70 Qty 10")
+  console.log(`  [MERGED_QTY] Backward scan failed, trying forward...`);
+  for (let i = amountIdx + 1; i < tokens.length; i++) {
+     const t = tokens[i];
+     if (!/^\d+$/.test(t)) continue;
+     const val = Number(t);
+     
+     // Basic validity
+     if (val >= 1 && val <= 99999) {
+         console.log(`  [MERGED_QTY] Found ${val} (FORWARD) at position ${i}`);
+         return val;
+     }
   }
   
   return null;
@@ -727,13 +741,13 @@ export function extractProductName(text, qty) {
     
     // Remove pack patterns
     t = t.replace(/\s+\d+X\d+[A-Z]?\s*$/gi, "");
-    t = t.replace(/\s+\d+['`"]?S\s*$/gi, "");
-    t = t.replace(/\s+\d{1,2},S\s*$/gi, "");  // Remove "10,S" pattern
+    // 🔥 FIX 3: Remove pack patterns like "10,S" or "10'S" BEFORE splitting
+    // This cleans the string so the "Smart Loop" below works on pure product+strength
+    t = t.replace(/\s+\d{1,2}\s*[,`'"]\s*S\b/gi, ""); // Remove "10,S", "10'S"
     
-    // 🔥 SMART PACK REMOVAL: Remove trailing numbers that are likely pack sizes
-    // Keep: Strength numbers (part of name like "ARBITEL 40", "DOLO 650")
-    // Remove: Pack sizes (typically appear after strength, like "ARBITEL 40 15")
-    
+    // 🔥 NEW: Also remove "30 10" pattern if 30 is strength and 10 is pack?
+    // Hard to distinguish. Rely on loop.
+
     const words = t.trim().split(/\s+/);
     const productWords = [];
     let foundStrength = false;
@@ -747,6 +761,12 @@ export function extractProductName(text, qty) {
     for (let i = 0; i < words.length; i++) {
       const w = words[i];
       
+      // If it contains a slash, keep it (e.g. 50/500)
+      if (w.includes('/')) {
+         productWords.push(w);
+         continue;
+      }
+
       // If it's a letter-based word, always include
       if (/[A-Z]/i.test(w)) {
         productWords.push(w);
@@ -780,15 +800,21 @@ export function extractProductName(text, qty) {
 
   // ✅ NEW: Apply global cleaning
   // Don't strip form words (TABS etc) - let normalizeProductName handle them
-  // Remove units (MG/ML) but keep number
+  
+  // 🔥 FIX 1: Repair split decimals common in PDF (e.g. "2 . 5" -> "2.5")
+  t = t.replace(/(\d+)\s*\.\s*(\d+)/g, "$1.$2");
+  
+  // 🔥 FIX 2: Handle decimal units (e.g. "2.5 MG")
+  // Previously only matched integers (\d+), leaving ".5" behind
   t = t
     .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT)\b/gi, "")
-    .replace(/(\d+)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1")
+    .replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1") // Keep number (int or decimal)
     .replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // Remove standalone units
     .replace(/\b(\d+)\s*['`"]?S\b/gi, "")
     // Fix dot packs in Text Mode (e.g. "TAB.15" -> "TAB")
-    .replace(/([^0-9])\s*\.\d+[\.\s]*$/g, "$1")
-    .replace(/\.\s*\d+[\.\s]*$/g, "")
+    // 🔥 FIXED: Don't strip if it looks like a decimal strength (e.g. 2.5)
+    // Only strip if it's .Number at the very end and NOT preceded by a digit (which would make it a decimal)
+    .replace(/([^0-9])\s*\.\d+[\.\s]*$/g, "$1") 
     .replace(/\s+/g, " ")
     .trim();
 
