@@ -187,6 +187,10 @@ function hasCompatibleStrength(invoiceText, productName) {
 
   // ❌ One has strength, other doesn't = NOT compatible
   // This prevents "MECONERV 500" from matching "MECONERV" automatically
+  if ((inv && !prod) || (!inv && prod)) {
+     // console.log(`    ⚠️ Strength Mismatch: Inv='${inv}' vs Prod='${prod}' (One missing)`);
+     return false;
+  }
   return false;
 }
 
@@ -560,15 +564,21 @@ if (
           }
         }
         
-        // 🔥 LENIENT: If only one candidate exists, auto-select it anyway
+        // 🔥 LENIENT: If only one candidate exists, auto-select it ONLY if compatible
         if (candidates.length === 1) {
-          console.log(`  ✅ AUTO-SELECTED (single candidate): ${candidates[0].productName}`);
-          return {
-            ...candidates[0],
-            confidence: 0.65,
-            matchType: "SINGLE_CANDIDATE",
-            boxPack: candidates[0].boxPack || candidates[0].pack || 0
-          };
+          const cand = candidates[0];
+          if (hasCompatibleStrength(rawInvoice, cand.productName) &&
+              hasCompatibleVariant(rawInvoice, cand.productName)) {
+              console.log(`  ✅ AUTO-SELECTED (single candidate): ${cand.productName}`);
+              return {
+                ...cand,
+                confidence: 0.65,
+                matchType: "SINGLE_CANDIDATE",
+                boxPack: cand.boxPack || cand.pack || 0
+              };
+          } else {
+             console.log(`  ❌ SINGLE CANDIDATE REJECTED (Incompatible): ${cand.productName}`);
+          }
         }
         
         // Multiple candidates but none passed checks - return for manual selection

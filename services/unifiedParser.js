@@ -368,8 +368,15 @@ function extractQuantityOriginal(text) {
     if (val > 10000) continue;
     if (val < MIN_QTY) continue;
     
+    // 🔥 NEW: Block numbers that look like Amounts/Prices
+    // 1. If it's the last token and > 100, it's likely an amount
+    if (i === tokens.length - 1 && val > 100) continue;
+    
+    // 2. If next token looks like "00" or just decimals (rare in simple lines but possible)
+    if (next === "00" || next === "0") continue;
+
     if (i <= 2 && /^[A-Z]+$/i.test(prev)) {
-      if ([500, 250, 1000, 125].includes(val)) continue;
+      if ([500, 250, 1000, 125, 650, 300, 30].includes(val)) continue;
     }
     
     candidates.push({ value: val, pos: i, score: i > 2 ? 2 : 1 });
@@ -539,9 +546,23 @@ function extractQuantityFromMergedLine(text) {
        continue;
     }
 
+    // 🔥 NEW: Block common strength numbers if they appear to be strength
+    // (e.g. DOLO 650 500.00 -> 650 is strength, 500 is amount)
+    // If val is a common strength and preceded by letters, skip it
+    if ([500, 650, 250, 1000, 125, 300, 30, 40, 20, 10, 5].includes(val)) {
+        // Strict check: Preceded by product name part?
+        // DOLO 650 -> '650' preceded by 'DOLO' (letters)
+        if (prev && /^[A-Z\-]+$/i.test(prev)) {
+             console.log(`  [BLOCKED] Likely strength: ${val} (preceded by ${prev})`);
+             continue;
+        }
+    }
+
     // ✅ Valid quantity: 1-99999 (increased range)
     // Return FIRST valid quantity found (closest to amount)
     if (val >= 1 && val <= 99999) {
+      // 🔥 FINAL CHECK: valid quantity shouldn't be too close to amount if amount is also small
+      // But typically amount is float.
       console.log(`  [MERGED_QTY] Found ${val} at position ${i}`);
       return val;
     }
@@ -582,6 +603,21 @@ export function extractQuantity(text = "") {
   if (qtyLineQty) {
     console.log(`  ✅ [QTY] Strategy 3 (Qty Line): ${qtyLineQty}`);
     return qtyLineQty;
+  }
+
+  // 3.5️⃣ 🔥 TEXT FILE PATTERN (Micro Labs)
+  // Pattern: "15's *30 600" or "* 30 600"
+  // The asterix is key. It denotes box count, followed by Total Qty.
+  // Supports optional +FREE suffix (e.g. "+10FREE" or "+FREE")
+  const textPattern = clean.match(/[\*xX]\s*\d+\s+(\d+)(?:\s*\+\s*\d*\s*(?:FREE|F|BONUS|SCHEME))?\s*$/i);
+  if (textPattern) {
+      const val = Number(textPattern[1]);
+      // Allow 1000-9999 (SAP codes) if matched by this strict pattern
+      // Because "7000" might be a valid quantity here
+      if (val >= 1 && val < 999999) {
+          console.log(`  ✅ [QTY] Strategy 3.5 (Text Pattern): ${val}`);
+          return val;
+      }
   }
 
   // 4️⃣ LAST RESORT

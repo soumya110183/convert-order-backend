@@ -50,7 +50,19 @@ export function splitProduct(raw = "") {
       strengthPattern = strengthPattern.replace(/\//g, "\\s*\\/\\s*");
     }
 
-    text = text.replace(new RegExp(`\\b${strengthPattern}\\b`, "gi"), " ");
+    // Try removing exact match first (e.g. "50MG")
+    let newText = text.replace(new RegExp(`\\b${strengthPattern}\\b`, "gi"), " ");
+    
+    // If no change, and detected strength ends in "MG" (implicit unit added by extractor),
+    // try removing just the number part (e.g. "2.5" from "AMLONG 2.5")
+    if (newText === text && detectedStrength.match(/MG$/) && !text.match(/MG\b/i)) {
+       const numberPart = detectedStrength.replace(/MG$/, "");
+       const numPattern = numberPart.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+       // Remove number if it's a standalone word or followed by space
+       newText = text.replace(new RegExp(`\\b${numPattern}\\b`, "gi"), " ");
+    }
+
+    text = newText;
   }
 
   // STEP 5: Remove pack info
@@ -58,7 +70,7 @@ export function splitProduct(raw = "") {
   text = text.replace(/\b\d+\s*['"`]?\s*S\b/gi, " ");
 
   // STEP 6: Remove form words to get base name
-  text = text.replace(/\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION|SYRUP|SYP|SUSPENSION|SUSP|DROPS?)\b/gi, " ");
+  text = text.replace(/\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION)\b/gi, " ");
 
   // STEP 7: Handle hyphenated suffixes (AMLONG-A, DOLO-T)
   // These are part of the name, not variants

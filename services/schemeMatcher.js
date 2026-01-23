@@ -11,40 +11,67 @@ function normalize(text = "") {
 /**
  * Find the best applicable scheme for a given product and context
  */
+/**
+ * Find the best applicable scheme for a given product and context
+ * ✅ CONFLICT RESOLUTION: Returns the most specific match
+ */
 function findApplicableScheme(schemes, productCode, itemDesc, customerCode, division) {
   const normalizedCode = normalize(productCode);
   const normalizedDesc = normalize(itemDesc);
   const normalizedDiv = normalize(division);
   const normalizedCust = normalize(customerCode);
 
-  return schemes.find(s => {
+  // 1. Find ALL candidates
+  const candidates = schemes.filter(s => {
     if (!s.isActive) return false;
 
-    // 1. Match Product (Code OR Name)
+    // A. Product Match
     const codeMatch = s.productCode && normalize(s.productCode) === normalizedCode;
     const nameMatch = s.productName && normalize(s.productName) === normalizedDesc;
     
     if (!codeMatch && !nameMatch) return false;
 
-    // 2. Check Customer Restriction (if defined)
+    // B. Customer Match (Strict: If scheme has customers, must match)
     if (s.applicableCustomers && s.applicableCustomers.length > 0) {
       if (!s.applicableCustomers.includes(normalizedCust)) {
         return false;
       }
     }
 
-    // 3. Check Division (Optional)
+    // C. Division Match (Soft: If scheme has division, it SHOULD match, but we might allow cross-div if no better option)
+    // Actually, for now, let's keep strict division matching if the scheme HAS a division defined
     if (s.division && normalizedDiv) {
         const schemeDiv = normalize(s.division);
-        if (!codeMatch && schemeDiv !== normalizedDiv && 
-            !schemeDiv.includes(normalizedDiv) && 
-            !normalizedDiv.includes(schemeDiv)) {
+        if (schemeDiv !== normalizedDiv && !schemeDiv.includes(normalizedDiv) && !normalizedDiv.includes(schemeDiv)) {
              return false;
         }
     }
 
     return true;
   });
+
+  if (candidates.length === 0) return null;
+
+  // 2. Score Candidates
+  const scored = candidates.map(s => {
+      let score = 0;
+
+      // Rule 1: Customer Specific is Highest Priority
+      if (s.applicableCustomers?.includes(normalizedCust)) score += 100;
+
+      // Rule 2: Exact Code match > Name match
+      if (s.productCode && normalize(s.productCode) === normalizedCode) score += 50;
+      else if (s.productName && normalize(s.productName) === normalizedDesc) score += 20;
+
+      // Rule 3: Exact Division match > Partial/Global
+      if (s.division && normalize(s.division) === normalizedDiv) score += 10;
+
+      return { scheme: s, score };
+  });
+
+  // 3. Return Best Match
+  scored.sort((a, b) => b.score - a.score);
+  return scored[0].scheme;
 }
 
 /**
@@ -68,46 +95,61 @@ export function applyScheme({ productCode, orderQty, itemDesc, division, custome
     return { schemeApplied: false };
   }
 
-  // ✅ FIND BASE SLAB (smallest minQty)
-  const baseSlab = scheme.slabs
-    .filter(s => s.minQty > 0)
-    .sort((a, b) => a.minQty - b.minQty)[0];
+  // ✅ BEST SLAB SELECTION LOGIC
+  // Iterate all slabs to find which one gives the MAXIMUM free quantity for the current orderQty
+  let bestSlab = null;
+  let maxFreeQty = -1;
+  let bestMultiplier = 0;
 
-  if (!baseSlab) {
-    return { schemeApplied: false };
-  }
+  // Filter valid slabs (minQty > 0)
+  const validSlabs = scheme.slabs.filter(s => s.minQty > 0);
 
-  // ✅ CHECK IF ORDER QUALIFIES (must meet base slab minimum)
-  if (orderQty < baseSlab.minQty) {
+  if (validSlabs.length === 0) return { schemeApplied: false };
+
+  // Check each slab
+  validSlabs.forEach(slab => {
+      if (orderQty >= slab.minQty) {
+          const multiplier = Math.floor(orderQty / slab.minQty);
+          // If freeQty is 0, we still care about the slab match (maybe it's a discount scheme, but here we track freeQty)
+          // Ideally check schemePercent too, but freeQty is priority based on user request "300+60"
+          const totalFree = multiplier * (slab.freeQty || 0);
+
+          // Logic: Prefer higher free qty. If equal, prefer higher tier (larger minQty) as it usually implies better status.
+          if (totalFree > maxFreeQty || (totalFree === maxFreeQty && bestSlab && slab.minQty > bestSlab.minQty)) {
+              maxFreeQty = totalFree;
+              bestSlab = slab;
+              bestMultiplier = multiplier;
+          }
+      }
+  });
+
+  // If no slab qualified (orderQty < smallest minQty)
+  if (!bestSlab) {
+    // Find limits for reporting
+    const minSlab = validSlabs.sort((a, b) => a.minQty - b.minQty)[0];
     return { 
       schemeApplied: false,
       reason: 'ORDER_BELOW_MINIMUM',
-      minimumQty: baseSlab.minQty
+      minimumQty: minSlab ? minSlab.minQty : 0
     };
   }
-
-  // ✅ CALCULATE MULTIPLIER (how many times the base slab fits)
-  const multiplier = Math.floor(orderQty / baseSlab.minQty);
   
-  // ✅ PROPORTIONAL FREE QUANTITY
-  const totalFreeQty = multiplier * (baseSlab.freeQty || 0);
-
   // ✅ CALCULATE ACTUAL SCHEME PERCENT
-  const schemePercent = orderQty > 0 && totalFreeQty > 0
-    ? Number(((totalFreeQty / orderQty) * 100).toFixed(2))
-    : (baseSlab.schemePercent * 100 || 0);
+  const schemePercent = orderQty > 0 && maxFreeQty > 0
+    ? Number(((maxFreeQty / orderQty) * 100).toFixed(2))
+    : (bestSlab.schemePercent * 100 || 0);
 
   return {
     schemeApplied: true,
-    freeQty: totalFreeQty,
+    freeQty: maxFreeQty,
     schemePercent: schemePercent / 100, // Convert back to decimal
-    appliedSlab: baseSlab,
-    multiplier,
+    appliedSlab: bestSlab,
+    multiplier: bestMultiplier,
     baseRatio: {
-      minQty: baseSlab.minQty,
-      freeQty: baseSlab.freeQty
+      minQty: bestSlab.minQty,
+      freeQty: bestSlab.freeQty
     },
-    calculation: `${orderQty} ÷ ${baseSlab.minQty} = ${multiplier} × ${baseSlab.freeQty} = ${totalFreeQty} free`,
+    calculation: `${orderQty} ÷ ${bestSlab.minQty} = ${bestMultiplier} × ${bestSlab.freeQty} = ${maxFreeQty} free`,
     availableSlabs: scheme.slabs,
     schemeName: scheme.schemeName
   };
@@ -128,40 +170,64 @@ export function findUpsellOpportunity({ productCode, orderQty, itemDesc, divisio
 
   if (!scheme || !scheme.slabs?.length) return null;
 
-  // Find base slab
-  const baseSlab = scheme.slabs
-    .filter(s => s.minQty > 0)
-    .sort((a, b) => a.minQty - b.minQty)[0];
-  
-  if (!baseSlab || baseSlab.minQty <= 0) return null;
+  // Calculate current free qty (using our robust applyScheme logic)
+  const currentResult = applyScheme({ productCode, orderQty, itemDesc, division, customerCode, schemes });
+  const currentFree = currentResult.freeQty || 0;
 
-  // Current multiplier
-  const currentMultiplier = Math.floor(orderQty / baseSlab.minQty);
-  
-  // Target next multiplier
-  const targetMultiplier = currentMultiplier + 1;
-  const targetQty = targetMultiplier * baseSlab.minQty;
-  const diff = targetQty - orderQty;
+  let bestSuggestion = null;
+  let maxMarginalGain = -1; // (Additional Free) / (Additional Order)
 
-  // Only suggest if difference is reasonable (within 60% of base slab)
-  const threshold = baseSlab.minQty * 0.6;
-  
-  if (diff > 0 && diff <= threshold) {
-      const currentFreeQty = currentMultiplier * (baseSlab.freeQty || 0);
-      const potentialFreeQty = targetMultiplier * (baseSlab.freeQty || 0);
-      const additionalFree = potentialFreeQty - currentFreeQty;
+  // Filter valid slabs
+  const validSlabs = scheme.slabs.filter(s => s.minQty > 0);
+
+  // Check potential targets for ALL slabs
+  validSlabs.forEach(slab => {
+      // Find next multiple breakpoint
+      // If below minQty, next is minQty.
+      // If above, next is (mult + 1) * minQty
+      const multiplier = Math.floor(orderQty / slab.minQty);
+      const targetMultiplier = multiplier + 1;
+      const targetQty = targetMultiplier * slab.minQty;
       
+      const diff = targetQty - orderQty;
+
+      // Rule: Only suggest if diff is reasonable (e.g. within 50% of current order OR small absolute number)
+      // User example: 260 -> 300 (diff 40). 40 is ~15%. this is reasonable.
+      // Let's cap at 50% increase or 100 units, whichever is safer? 
+      // Actually, standard is "within reasonable reach". Let's say max 60% increase.
+      const isReasonableWait = diff > 0 && (diff <= orderQty * 0.6 || diff <= 50); 
+      
+      if (isReasonableWait) {
+          const potentialFree = targetMultiplier * (slab.freeQty || 0);
+          const additionalFree = potentialFree - currentFree;
+
+          if (additionalFree > 0) {
+              const marginalGain = additionalFree / diff; // Efficiency: Free units per Added unit
+
+              if (marginalGain > maxMarginalGain) {
+                  maxMarginalGain = marginalGain;
+                  bestSuggestion = {
+                      targetQty,
+                      diff,
+                      additionalFree,
+                      potentialFree
+                  };
+              }
+          }
+      }
+  });
+
+  if (bestSuggestion) {
       return {
           productCode,
           currentQty: orderQty,
-          currentFreeQty,
-          suggestedQty: targetQty,
-          addQty: diff,
-          potentialFreeQty,
-          additionalFree,
-          schemePercent: baseSlab.schemePercent,
+          currentFreeQty: currentFree,
+          suggestedQty: bestSuggestion.targetQty,
+          addQty: bestSuggestion.diff,
+          potentialFreeQty: bestSuggestion.potentialFree,
+          additionalFree: bestSuggestion.additionalFree,
           schemeName: scheme.schemeName || "Scheme",
-          message: `Add ${diff} more to get ${additionalFree} additional free (total: ${potentialFreeQty} free)`
+          message: `Add ${bestSuggestion.diff} more to get ${bestSuggestion.additionalFree} additional free (Total: ${bestSuggestion.potentialFree})`
       };
   }
 

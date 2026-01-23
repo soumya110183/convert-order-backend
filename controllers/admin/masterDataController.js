@@ -399,6 +399,31 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
         return match;
     }
 
+    // New Strategy 3b: Starts with + division (e.g. Input "Dolo" matches DB "Dolo Drops")
+    match = allProducts.find(p => {
+        const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
+        const searchNorm = normalizeMedicalTerms(cleanedSearchName);
+        return (pName.startsWith(searchNorm) || searchNorm.startsWith(pName)) && 
+               normalizeDivision(p.division) === normDivision;
+    });
+    if (match) {
+        diagnostics.matchType = "STARTS_WITH_DIVISION";
+        return match;
+    }
+
+    // Strategy 3c: Contains + Division (Broadest Safe Match)
+    match = allProducts.find(p => {
+        const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
+        const searchNorm = normalizeMedicalTerms(cleanedSearchName);
+        return (pName.includes(searchNorm) || searchNorm.includes(pName)) &&
+               normalizeDivision(p.division) === normDivision &&
+               pName.length > 3 && searchNorm.length > 3; // Ensure not matching "A" in "APPLE"
+    });
+    if (match) {
+        diagnostics.matchType = "CONTAINS_DIVISION";
+        return match;
+    }
+
     // Strategy 4: Fuzzy division
     match = allProducts.find(p =>
         normalizeMedicalTerms(p.cleanedProductName || p.productName) === normalizeMedicalTerms(cleanedSearchName) &&
@@ -414,14 +439,14 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
         const pBase = normalizeMedicalTerms(p.baseName || p.productName);
         return (pBase.includes(normBase) || normBase.includes(pBase)) &&
                normalizeDivisionAlias(p.division) === normalizeDivisionAlias(currentDivision) &&
-               baseName.length > 3;
+               baseName.length >= 2; // 🔥 Lowered from 3 to 2 to catch short names like 'AZ'
     });
     if (match) {
         diagnostics.matchType = "PARTIAL_NAME_DIVISION";
         return match;
     }
 
-    // Strategy 6: Cross-division (single candidate)
+    // Strategy 6: Cross-division (Exact Name/Base Match)
     const candidates = allProducts.filter(p => {
         const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
         const pBase = normalizeMedicalTerms(p.baseName || p.productName);
@@ -436,6 +461,13 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
     }
 
     if (candidates.length > 1) {
+        // Prefer exact match logic or just take first if unique codes
+        const uniqueCodes = new Set(candidates.map(c => c.productCode));
+        if (uniqueCodes.size === 1) {
+             diagnostics.matchType = "CROSS_DIVISION_UNIQUE_CODE";
+             return candidates[0];
+        }
+
         const divMatch = candidates.find(c => 
             normalizeDivisionAlias(c.division) === normalizeDivisionAlias(currentDivision)
         );
@@ -443,8 +475,29 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
             diagnostics.matchType = "CROSS_DIVISION_PREFER";
             return divMatch;
         }
-        diagnostics.matchType = "CROSS_DIVISION_FIRST";
-        return candidates[0];
+    }
+
+    // Strategy 7: Aggressive Global Partial Match (Slow but necessary for recovery)
+    // Only if search name is significant length (> 3 chars)
+    if (cleanedSearchName.length > 3) {
+        const globalMatches = allProducts.filter(p => {
+             const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
+             return pName.includes(normalizeMedicalTerms(cleanedSearchName)) || 
+                    normalizeMedicalTerms(cleanedSearchName).includes(pName);
+        });
+
+        // Filter for specific division first
+        const sameDiv = globalMatches.find(p => normalizeDivisionAlias(p.division) === normalizeDivisionAlias(currentDivision));
+        if (sameDiv) {
+             diagnostics.matchType = "GLOBAL_PARTIAL_SAME_DIV";
+             return sameDiv;
+        }
+
+        // If only 1 global match found in ANY division, take it
+        if (globalMatches.length === 1) {
+             diagnostics.matchType = "GLOBAL_PARTIAL_UNIQUE";
+             return globalMatches[0];
+        }
     }
 
     diagnostics.reason = "NO_MATCH_FOUND";
@@ -455,7 +508,7 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
 console.log(`${"=".repeat(80)}`);
 console.log("STEP 2: Processing scheme rows...\n");
 
-let lastProductName = "";
+const lastProductByBlock = {}; // ✅ FIX: Track last product per block independently
 let rowsProcessed = 0;
 let rowsSkipped = 0;
 
@@ -463,8 +516,24 @@ for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
     const row = schemeRowsRaw[rIndex];
     const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
 
-    // Skip headers
-    if (/DIVISION\s*:/i.test(rowStr)) continue;
+    // ✅ DYNAMIC DIVISION UPDATE (Handle Vertical Stacking)
+    if (/DIVISION\s*:/i.test(rowStr)) {
+        for (let colIndex = 0; colIndex < row.length; colIndex++) {
+            const cell = row[colIndex] ? String(row[colIndex]).trim() : "";
+            if (/DIVISION\s*:/i.test(cell)) {
+                const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
+                if (divMatch) {
+                    const divName = divMatch[1].trim().toUpperCase();
+                    blockDivisions[colIndex] = divName;
+                    console.log(`🔄 [Row ${rIndex+1}] Updated Div for Col ${colIndex} -> ${divName}`);
+                }
+            }
+        }
+        continue;
+    }
+    // 🛡️ CALCULATION TABLE FILTER (Skip "Charge | Free | Total" rows)
+    if (/Charge|Total|C\s*Box|Scheme\s*Calculation|Product\s*Pack/i.test(rowStr)) continue;
+
     if (/PRODUCT.*MIN.*QTY/i.test(rowStr)) continue;
     if (/^SCHEME\s*%$/i.test(rowStr)) continue;
 
@@ -479,9 +548,9 @@ for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
         
         let productName = pName ? String(pName).trim() : "";
         
-        // Carry forward logic
+        // Carry forward logic (Per Block!)
         if ((!productName || /^\d+$/.test(productName)) && (minQ || freeQ || pct)) {
-            productName = lastProductName;
+            productName = lastProductByBlock[blockStart] || "";
         }
         
         // Validate
@@ -491,13 +560,13 @@ for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
             /^MIN$/i.test(productName) ||
             /^QTY$/i.test(productName) ||
             /^FREE$/i.test(productName) ||
-            (/^\d+$/.test(productName) && !lastProductName)) {
+            (/^\d+$/.test(productName) && !lastProductByBlock[blockStart])) {
             continue;
         }
 
-        // Update carry-forward
+        // Update carry-forward for this block
         if (productName && productName.length > 2 && !/^\d+$/.test(productName)) {
-            lastProductName = productName;
+            lastProductByBlock[blockStart] = productName;
         }
 
         let minQty = Number(minQ) || 0;
@@ -512,6 +581,13 @@ for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
         }
 
         if (minQty === 0 && freeQty === 0 && schemePercent === 0) {
+            rowsSkipped++;
+            continue;
+        }
+
+        // 🛡️ JUNK FILTER: Ignore impossible schemes (e.g. > 150% or Totals rows)
+        if (schemePercent > 1.5 || (schemePercent * 100) > 150) {
+            console.log(`⚠️ Ignored Junk Scheme > 150%: ${schemePercent * 100}% [${productName}]`);
             rowsSkipped++;
             continue;
         }
@@ -1194,27 +1270,31 @@ export const getSchemes = async (req, res) => {
       .lean();
 
     // 🔥 FLATTEN SLABS FOR UI
-   const rows = schemes.flatMap(s =>
-  (s.slabs || []).map((slab, index) => ({
-    _id: `${s._id}-${index}`, // ✅ UNIQUE
-    productCode: s.productCode,
-    productName: s.productName,
-    division: s.division,
-    minQty: slab.minQty,
-    freeQty: slab.freeQty,
-    schemePercent: slab.schemePercent,
-    isActive: s.isActive
-  }))
-);
+    const rows = schemes.flatMap(s =>
+        (s.slabs || []).map((slab, index) => ({
+            _id: `${s._id}-${index}`, // ✅ UNIQUE
+            productCode: s.productCode,
+            productName: s.productName,
+            division: s.division,
+            minQty: slab.minQty,
+            freeQty: slab.freeQty,
+            schemePercent: slab.schemePercent,
+            isActive: s.isActive
+        }))
+    );
+
+    // ✅ PAGINATE THE FLATTENED ROWS
+    const startIndex = (page - 1) * limit;
+    const paginatedRows = rows.slice(startIndex, startIndex + limit);
 
     res.json({
       success: true,
-      data: rows,
-      total: schemes.length,  // ✅ DOCUMENT COUNT (199)
-      totalRows: rows.length, // SLAB COUNT (159) for pagination
+      data: paginatedRows, // Return only current page
+      total: rows.length,  // Total SLAB count for frontend pagination
       page,
-      limit
+      totalPages: Math.ceil(rows.length / limit)
     });
+
   } catch (err) {
     console.error("GET SCHEMES FAILED:", err);
     res.status(500).json({ error: "FAILED_TO_FETCH_SCHEMES" });

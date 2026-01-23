@@ -119,6 +119,13 @@ export async function uploadMasterExcel(buffer, orderCycle = "default") {
     
     if (!productCode || !itemdesc) {
       stats.skipped++;
+      if (stats.skipped <= 5) { // Log first 5 failures to avoid spam
+         console.log(`⚠️ Skipped Row [${stats.skipped}]: Missing Code or Desc`, {
+             ProductCode: getValue(r, ["sap code", "sapcode", "code"]),
+             ItemDesc: getValue(r, ["item desc", "itemdesc"]),
+             AllKeys: Object.keys(r)
+         });
+      }
       continue;
     }
 

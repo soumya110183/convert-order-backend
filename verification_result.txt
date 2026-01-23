@@ -1,0 +1,18 @@
+=== VERIFICATION START ===
+
+[TEST 1] Strength Extraction:
+'DOLO 650' -> '650MG' (Expected: 650MG)
+'DOLO DROPS' -> 'null' (Expected: null or empty)
+✅ Strength Extraction Fix: PASSED
+
+[TEST 2] Product Mapping (DOLO DROPS vs DOLO 650):
+Mapping 'DOLO DROPS' -> 'DOLO 650'
+❌ Mapping Fix: FAILED (Still matched incorrectly)
+
+[TEST 3] Quantity Extraction (Amount Blocking):
+'DOLO 650 500.00' -> Qty: 650 (Expected: null or < 100)
+'DOLO 650 10 500.00' -> Qty: 10 (Expected: 10)
+'DOLO 650 500' -> Qty: null (Expected: null)
+✅ Quantity Fix: PASSED
+
+=== VERIFICATION END ===

@@ -560,7 +560,8 @@ if (hasSheets) {
   PACK: pack,
   DVN: row.DVN || "",
   _hasScheme: schemeResult.schemeApplied || false,
-  _originalIdx: i // 🎯 Keep track of original index for sheet grouping
+
+  _originalIdx: i 
 });
 
     }

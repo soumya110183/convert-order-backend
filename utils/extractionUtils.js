@@ -5,12 +5,14 @@
  * ✅ Safe normalization
  */
 
-export const FORM_WORDS = /\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION|SYRUP|SYP|SUSPENSION|SUSP|DROPS?|CREAM|GEL|SPRAY|OINTMENT|LOTION|POWDER)\b/gi;
+export const FORM_WORDS = /\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION|CREAM|GEL|SPRAY|OINTMENT|LOTION|POWDER)\b/gi;
 
 export const VARIANTS = [
   "FORTE", "PLUS", "TRIO", "CV", "CT", "MT", "DM", "GM",
   "SR", "XR", "CR", "OD", "ER", "HS", "XL", "AM", "H",
-  "DS", "LS", "ADVANCE", "PRO", "LV", "HV", "DC", "TH"
+  "DS", "LS", "ADVANCE", "PRO", "LV", "HV", "DC", "TH",
+  "DROPS", "DROP",
+  "SUSPENSION", "SUSP", "SYRUP", "SYP"
 ];
 
 // Valid pharma strengths (prevents false positives)
@@ -59,7 +61,19 @@ export function extractStrength(text) {
     return `${decimalForm[1]}MG`;
   }
 
-  // STEP 4: Standalone number before form word (DOLO 650 TAB)
+  // STEP 4: Standalone number - CHECK IF VALID STRENGTH
+  const standalonePattern = new RegExp(`\\b(\\d+(?:\\.\\d+)?)\\b`);
+  const standaloneMatch = upper.match(standalonePattern);
+  if (standaloneMatch) {
+     const val = standaloneMatch[1];
+     // 🔥 STRICT: Only allow if it's in our known pharma strength list
+     if (VALID_STRENGTHS.has(val)) {
+        return `${val}MG`;
+     }
+  }
+
+  // STEP 5: Standalone number before form word (DOLO 650 TAB)
+  // (Redundant if Step 4 covers it, but kept for explicit form association if needed)
   const standalone = upper.match(/\b(\d+)\s*(TAB|TABS|TABLET|CAP|CAPS|CAPSULE)\b/);
   if (standalone && VALID_STRENGTHS.has(standalone[1])) {
     return `${standalone[1]}MG`;
