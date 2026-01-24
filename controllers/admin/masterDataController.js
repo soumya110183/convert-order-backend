@@ -25,6 +25,10 @@ function normalizeDivisionAlias(div = "") {
   const d = normalizeDivision(div);
   if (d === "GTF1") return "GTF";
   if (d === "DTF1") return "DTF";
+  if (d === "CAR3") return "CARDICARE";
+  if (d === "CAR1") return "CARDICARE"; // Fix: APIVAS
+  if (d === "CARDICARE") return "CARDICARE"; // Fix: APIVAS
+  if (d === "CARDICARE") return "CARDICARE";
   return d;
 }
 
@@ -235,16 +239,25 @@ const productOps = productRows
     const cleanDBName = cleanNameForDB(rawProductName);
 
     // 🔥 FIX: Use cleanDBName (with TABLETS/15'S removed) for splitting
-    const { name, strength, variant } = splitProduct(cleanDBName);
+    const { name, strength, variant, form } = splitProduct(cleanDBName);
 
     if (!name) {
       console.warn(`❌ Invalid product skipped: ${rawProductName}`);
       return null;
     }
 
-    // Reconstruct clean name: Name + Variant + Strength
-    // e.g., "VILDAPRIDE M 50/500MG TABLETS (15'S)" → "VILDAPRIDE M 50/500MG"
-    const reallyFinalName = [name, variant, strength].filter(Boolean).join(" ");
+    // Reconstruct clean name: Name + Variant + Strength + Form (Conditional)
+    // User Requirement: Keep "INJECTION", discard "TABLET/CAPSULE"
+    
+    let finalForm = "";
+    if (form && /INJ|INJECTION|SYRUP|SYP|DROPS|GEL|OINTMENT|OINT|CREAM|SACHET/i.test(form)) {
+        finalForm = form;
+    }
+    // Note: TAB/CAP/TABLET/CAPSULE are intentionally ignored here.
+
+    const reallyFinalName = [name, finalForm, variant, strength]
+        .filter(Boolean)
+        .join(" ");
     
     // Let's use `reallyFinalName` as the stored productName.
     // It is cleaner and structured.
@@ -293,7 +306,7 @@ if (productOps.length) {
   // -------------------------------------------------------------
   // 3. PROCESS SCHEMES (Raw Matrix Mode)
   // -------------------------------------------------------------
- /* =====================================================
+   /* =====================================================
    COMPLETE SCHEME UPLOAD WITH FULL DIAGNOSTICS
    Replace entire scheme processing section in uploadMasterDatabase
 ===================================================== */
@@ -308,6 +321,14 @@ const schemeRowsRaw =
 console.log(`\n${"=".repeat(80)}`);
 console.log(`📊 SCHEME PROCESSING STARTED`);
 console.log(`${"=".repeat(80)}`);
+
+// 🔥 CRITICAL FIX: Wipe old schemes to remove ghosts
+if (schemeRowsRaw.length > 0) {
+    console.log("🧹 Wiping existing schemes to ensure clean state...");
+    await SchemeMaster.deleteMany({}); 
+    console.log("✅ Old schemes deleted.");
+}
+
 console.log(`Raw rows in Excel: ${schemeRowsRaw.length}\n`);
 
 const blockDivisions = {}; 
@@ -316,43 +337,126 @@ let processedSlabs = 0;
 const failedMatches = []; // Track what failed and why
 
 // ✅ Map: productCode|division -> scheme data
-const schemeMap = new Map(); 
+// ✅ Map: productCode|division -> scheme data
+const schemeMap = new Map();
+// Carry-forward products for merged cells
+const lastBlockProducts = {}; 
 
-// STEP 1: DETECT ALL DIVISIONS
-console.log("STEP 1: Detecting divisions...\n");
+// DETECT DIVISION COLUMNS FIRST (Pre-scan for cleaner processing)
+const blockCols = new Set();
+for (const row of schemeRowsRaw) {
+    const rowStr = row.map(c => String(c || "")).join(" ");
+    if (/DIVISION\s*:/i.test(rowStr)) {
+        row.forEach((cell, idx) => {
+            if (cell && /DIVISION\s*:/i.test(cell)) blockCols.add(idx);
+        });
+    }
+}
+const BLOCK_STARTS = Array.from(blockCols).map(Number).sort((a,b) => a-b);
+if (BLOCK_STARTS.length === 0) BLOCK_STARTS.push(0, 5); // Fallback
 
+console.log(`✅ Block starts: ${BLOCK_STARTS.join(', ')}`);
+
+// STEP 3: PROCESS ROWS WITH DYNAMIC DIVISION UPDATES
 for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
     const row = schemeRowsRaw[rIndex];
-    const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
-    
-    if (/DIVISION\s*:/i.test(rowStr)) {
-        // Scan ALL columns
-        for (let colIndex = 0; colIndex < row.length; colIndex++) {
-            const cell = row[colIndex] ? String(row[colIndex]).trim() : "";
-            if (/DIVISION\s*:/i.test(cell)) {
-                const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
-                if (divMatch) {
-                    const divName = divMatch[1].trim().toUpperCase();
-                    blockDivisions[colIndex] = divName;
-                    console.log(`✅ Division at Column ${colIndex}: "${divName}"`);
-                }
+    const rowStr = row.map(c => String(c || "")).join(" ");
+
+    // 3a. Update Division Context (Mixed Row Safe)
+    row.forEach((cell, idx) => {
+        if (!cell) return;
+        const cellStr = String(cell).trim();
+        let newDiv = null;
+
+        if (/DIVISION\s*:/i.test(cellStr)) {
+            const match = cellStr.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
+            if (match) newDiv = match[1].trim();
+        } 
+        // Fix for CRC (Row 19)
+        else if (cellStr === "CRC") {
+            newDiv = "CRC";
+        }
+
+        if (newDiv) {
+            blockDivisions[idx] = newDiv.toUpperCase();
+            // Reset product context for this column when division changes
+            lastBlockProducts[idx] = null;
+        }
+    });
+
+    // Don't skip row just because it had a division update (Mixed Row support)
+    // But if it's ONLY a division header row (no data), the product loop below will naturally do nothing
+
+    // Skip strict junk rows
+    if (/Charge|Total|PRODUCT.*MIN/i.test(rowStr)) continue;
+
+    // 3b. Iterate Blocks
+    for (const startCol of BLOCK_STARTS) {
+        let productName = row[startCol];
+        const minQty = Number(row[startCol+1] || 0);
+        const freeQty = Number(row[startCol+2] || 0);
+        const pct = Number(row[startCol+3] || 0);
+
+        // If this very cell was the Division Header (e.g. "CRC"), ignore it as product
+        if (productName === "CRC" || /DIVISION\s*:/i.test(String(productName))) continue;
+
+        const hasValues = (minQty > 0 || freeQty > 0 || pct > 0);
+
+        // CARRY FORWARD LOGIC (Merged Cells)
+        if (!productName && hasValues && lastBlockProducts[startCol]) {
+            productName = lastBlockProducts[startCol];
+        }
+
+        if (!productName || typeof productName !== 'string') continue;
+
+        // Clean and Cache Name
+        const trimmedName = productName.trim();
+        if (row[startCol]) { // Only update if explicit name present
+             if (!/SCHEME|PRODUCT|MIN|QTY/.test(trimmedName.toUpperCase())) {
+                 lastBlockProducts[startCol] = trimmedName;
+             }
+        }
+        
+        productName = trimmedName;
+
+        if (minQty === 0 && freeQty === 0 && pct === 0) continue;
+        if (/SCHEME|PRODUCT|MIN|QTY/.test(productName.toUpperCase())) continue;
+
+        const division = blockDivisions[startCol];
+        if (!division) continue;
+
+        const diagnostics = {};
+        const match = findBestProductMatch(productName, division, allProducts, diagnostics);
+
+        if (match) {
+            const key = `${match.productCode}|${normalizeDivision(division)}`;
+            if (!schemeMap.has(key)) {
+                schemeMap.set(key, {
+                    productCode: match.productCode,
+                    productName: match.productName, // Store DB name
+                    division: normalizeDivision(division),
+                    slabs: []
+                });
             }
+            
+            let finalPct = pct;
+            if (finalPct > 1) finalPct = finalPct / 100;
+
+            schemeMap.get(key).slabs.push({
+                minQty, freeQty, schemePercent: finalPct
+            });
+            processedSlabs++;
+        } else {
+            skippedSchemes++;
+            failedMatches.push({ 
+                name: productName, 
+                div: division, 
+                reason: diagnostics.matchType ? "PARTIAL_FAIL" : "NO_MATCH",
+                diag: diagnostics 
+            });
         }
     }
 }
-
-const BLOCK_STARTS = Object.keys(blockDivisions).map(Number).sort((a, b) => a - b);
-
-if (BLOCK_STARTS.length === 0) {
-    console.warn("⚠️  NO DIVISIONS DETECTED! Using fallback columns [0, 5]");
-    BLOCK_STARTS.push(0, 5);
-    blockDivisions[0] = "DIVISION1";
-    blockDivisions[5] = "DIVISION2";
-} else {
-    console.log(`\n✅ Block starts detected: [${BLOCK_STARTS.join(', ')}]`);
-}
-
-console.log(`\nTotal divisions found: ${Object.keys(blockDivisions).length}\n`);
 
 // STEP 2: ENHANCED PRODUCT MATCHER WITH DIAGNOSTICS
 function findBestProductMatch(searchName, currentDivision, allProducts, diagnostics = {}) {
@@ -389,13 +493,62 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
         return match;
     }
 
-    // Strategy 3: Base name + division
-    match = allProducts.find(p =>
-        normalizeMedicalTerms(p.baseName || p.productName) === normBase &&
-        normalizeDivision(p.division) === normDivision
-    );
+    // Strategy 3: Base name + division (Strict Strength Check)
+    match = allProducts.find(p => {
+        const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+        const pDosage = p.dosage ? normalizeMedicalTerms(p.dosage) : "";
+        const searchDosage = dosage ? normalizeMedicalTerms(dosage) : "";
+
+        // Core match: Base name must match
+        if (pBase !== normBase) return false;
+        if (normalizeDivision(p.division) !== normDivision) return false;
+
+        // 🔥 CRITICAL FIX: Strength Enforcement with Unit Normalization
+        // Normalize: "10MG" -> "10", "5ML" -> "5"
+        const normalizeDosage = (d) => d ? d.replace(/[A-Z\s]+$/i, "") : "";
+        const sDosageNorm = normalizeDosage(searchDosage);
+        const pDosageNorm = normalizeDosage(pDosage);
+
+        // If search has strength (e.g. 1500), product MUST have same strength
+        // Prevents "MECONERV 1500" matching "MECONERV" (no strength/different strength)
+        if (sDosageNorm && pDosageNorm && sDosageNorm !== pDosageNorm) return false;
+        
+        // If search has strength but product doesn't -> MISMATCH
+        if (sDosageNorm && !pDosageNorm) return false;
+
+        // If search has NO strength, but product has strength -> MISMATCH (usually)
+        // e.g. "MECONERV" matching "MECONERV 1500" -> potentially dangerous?
+        // Let's allow it ONLY if it's the only MECONERV? No, safer to fail.
+        // Actually, if input is "MECONERV", it should match "MECONERV" (no strength).
+        if (!sDosageNorm && pDosageNorm) return false;
+
+        return true;
+    });
+
     if (match) {
-        diagnostics.matchType = "BASE_NAME_DIVISION";
+        diagnostics.matchType = "BASE_NAME_DIVISION_STRICT";
+        return match;
+    }
+
+    // Strategy 3b: Relaxed Strength (Handle "EBAST 10" -> "EBAST" [null])
+    // Only applied if Strict Strategy failed.
+    match = allProducts.find(p => {
+        const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+        const pDosage = p.dosage ? normalizeMedicalTerms(p.dosage) : "";
+        const searchDosage = dosage ? normalizeMedicalTerms(dosage) : "";
+        
+        // Base Name MUST match exactly
+        if (pBase !== normBase) return false;
+        if (normalizeDivision(p.division) !== normDivision) return false;
+
+        // Condition: Search has User-defined strength, but Product has NONE.
+        if (searchDosage && !pDosage) return true;
+
+        return false;
+    });
+
+    if (match) {
+        diagnostics.matchType = "BASE_NAME_DIVISION_RELAXED";
         return match;
     }
 
@@ -447,6 +600,8 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
     }
 
     // Strategy 6: Cross-division (Exact Name/Base Match)
+    // 🔥 DISABLED: Prevent "Ghost" schemes (matching product from another division)
+    /*
     const candidates = allProducts.filter(p => {
         const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
         const pBase = normalizeMedicalTerms(p.baseName || p.productName);
@@ -476,8 +631,11 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
             return divMatch;
         }
     }
+    */
 
     // Strategy 7: Aggressive Global Partial Match (Slow but necessary for recovery)
+    // 🔥 DISABLED: Prevent Cross-Division partial matches
+    /*
     // Only if search name is significant length (> 3 chars)
     if (cleanedSearchName.length > 3) {
         const globalMatches = allProducts.filter(p => {
@@ -499,6 +657,7 @@ function findBestProductMatch(searchName, currentDivision, allProducts, diagnost
              return globalMatches[0];
         }
     }
+    */
 
     diagnostics.reason = "NO_MATCH_FOUND";
     return null;

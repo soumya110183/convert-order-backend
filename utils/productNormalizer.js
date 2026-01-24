@@ -26,9 +26,10 @@ const FORM_SYNONYMS = {
   'CPS': 'CAP',
   
   // Injections
-  'INJECTION': 'INJ',
-  'INJECTIONS': 'INJ',
-  'INJECTIO': 'INJ',
+  // Injections - PRESERVED
+  // 'INJECTION': 'INJ',  // DISABLED: Keep as INJECTION
+  // 'INJECTIONS': 'INJ',
+  // 'INJECTIO': 'INJ',
   
   // Syrups
   'SYRUP': 'SYP',

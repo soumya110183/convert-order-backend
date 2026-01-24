@@ -69,8 +69,14 @@ export function splitProduct(raw = "") {
   text = text.replace(/\(\s*\d+\s*['"`]?\s*S\s*\)/gi, " ");
   text = text.replace(/\b\d+\s*['"`]?\s*S\b/gi, " ");
 
-  // STEP 6: Remove form words to get base name
-  text = text.replace(/\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION)\b/gi, " ");
+  // STEP 6: Extract form words
+  let form = "";
+  const formMatch = text.match(/\b(TABLETS?|TABS?|TAB|CAPSULES?|CAPS?|CAP|INJ|INJECTION|SYRUP|SYP|DROPS|GEL|OINTMENT|OINT|CREAM|SACHET)\b/i);
+  if (formMatch) {
+    form = formMatch[0].toUpperCase();
+    // Remove form from text
+    text = text.replace(new RegExp(`\\b${form}\\b`, "gi"), " ");
+  }
 
   // STEP 7: Handle hyphenated suffixes (AMLONG-A, DOLO-T)
   // These are part of the name, not variants
@@ -91,7 +97,8 @@ text = text.replace(/-+$/g, "").replace(/^-+/g, "");
   return {
     name,
     strength,
-    variant
+    variant,
+    form // ✅ Return extracted form
   };
 }
 
