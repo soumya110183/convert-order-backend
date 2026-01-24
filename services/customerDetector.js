@@ -49,8 +49,12 @@ export function detectCustomerFromInvoice(rows = []) {
     const total = line.match(/[A-Z]/gi)?.length || 0;
     if (total === 0 || letters / total < 0.7) continue;
 
-    // Must look like business name - 🔥 EXPANDED: Added more common keywords
-    if (!/\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|MEDICAL|DISTRIBUTORS?|ENTERPRISES?|DRUG\s*HOUSE|DRUGS?|WHOLESALE|RETAIL|STORES?|MART|DEPOT|STOCKIST|SURGICALS?|SUPPLIERS?|CO\.?|CORPORATION|CHEMISTS?)\b/i.test(line)) {
+    // Must look like business name - 🔥 EXPANDED
+    const isBusiness = /\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|MEDICAL|DISTRIBUTORS?|ENTERPRISES?|DRUG\s*HOUSE|DRUGS?|WHOLESALE|RETAIL|STORES?|MART|DEPOT|STOCKIST|SURGICALS?|SUPPLIERS?|CO\.?|CORPORATION|CHEMISTS?|HEALTH\s*CARE|HOSPITALS?|CLINICS?|MEDICARE)\b/i.test(line);
+    
+    // console.log(`DEBUG: Line "${line}" | Business: ${isBusiness}`);
+    
+    if (!isBusiness) {
       continue;
     }
 
@@ -151,6 +155,15 @@ function cleanCustomerName(text) {
     .trim()
     // Remove leading prefixes
     .replace(/^(?:M\/S|M\s+|M\.\s*|MS\s+|TO|CUSTOMER|CLIENT|BILL\s+TO|SHIP\s+TO|SOLD\s+TO)[:\s]*/i, '')
+    // 4. Cleanup noise
+    // Remove "M/S", "M / S", or isolated "M" at start (common in text files)
+    .replace(/^M\s*\/\s*S\s+/i, "")
+    .replace(/^M\s+S\s+/i, "")
+    .replace(/^M\s+/i, "") // Remove 'M' prefix (e.g. "M                   ATTUPURAM")
+    // Remove leading special chars
+    .replace(/^[:\-.,\s]+/, "")
+    // Remove "TO:" or "BUYER:" prefix
+    .replace(/^(TO|BUYER|PARTY|CUSTOMER|BILL TO|SHIP TO)[:\-\s]+/i, "")
     // Remove customer code if present
     .replace(/^[A-Z0-9]+\s*[-–]\s*/i, '')
     // Remove trailing punctuation
@@ -162,24 +175,14 @@ function cleanCustomerName(text) {
     // Remove extra whitespace
     .replace(/\s+/g, ' ')
     .replace(/\./g, '') // 🔥 Fix: Remove dots early
-    .trim();
+    .trim()
+    .toUpperCase(); // 🔥 Force Uppercase for consistent matching
   
-  // Title case conversion
-  cleaned = cleaned
-    .split(' ')
-    .map(word => {
-      // Keep abbreviations uppercase (2-3 letters)
-      if (word.length <= 3 && word === word.toUpperCase()) {
-        return word;
-      }
-      // Keep if already mixed case (like Pvt, Ltd)
-      if (/^[A-Z][a-z]+$/.test(word)) {
-        return word;
-      }
-      // Title case
-      return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
-    })
-    .join(' ');
+  // Previously had Title Case logic here - Removed to fix mismatches
+  // (e.g. Ayyappa Enterprises vs AYYAPPA ENTERPRISES)
+  
+  console.log(`[CustomerClean] Output: "${cleaned}"`);
+  return cleaned;
   
   console.log(`[CustomerClean] Output: "${cleaned}"`);
   return cleaned;
@@ -194,7 +197,7 @@ function isValidCustomerName(name) {
   // Blacklist: supplier/system info
   const SUPPLIER_PATTERNS = [
     /MICRO\s*LABS/i,
-    /RAJ\s*DISTRIBUTORS/i,
+    /RAJ\s*DISTRIBUTORS/i, // ✅ Blocked again (It is a supplier)
     /BLUEFOX/i,
     /SOFTWARE/i,
     /INVOICE/i,

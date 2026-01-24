@@ -11,6 +11,7 @@ import adminMasterRoutes from "./routes/admin/masterRoutes.js";
 import adminUserRoutes from "./routes/admin/adminUserRoutes.js";
 import userDashboardRoutes from "./routes/userDashboardRoute.js";
 import masterDataRoutes from "./routes/admin/masterDataRoutes.js";
+import adminDashboardRoutes from "./routes/admin/adminDashboardRoutes.js"; // ✅ New Route
 
 // Middlewares
 import errorHandler from "./middlewares/errorMiddleware.js";
@@ -59,6 +60,7 @@ app.use("/api/user", userDashboardRoutes)
 app.use("/api/admin/master", adminMasterRoutes);
 app.use("/api/admin/users", adminUserRoutes);
 app.use("/api/admin", masterDataRoutes);
+app.use("/api/admin/dashboard", adminDashboardRoutes); // ✅ Mounted
 
 /* -------------------- HEALTH CHECK -------------------- */
 app.get("/api/health", (req, res) => {

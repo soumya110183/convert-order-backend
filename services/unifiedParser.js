@@ -933,16 +933,17 @@ async function parsePDF(file) {
   debug(`\n📄 PDF: ${rows.length} raw rows`);
   
   // 🔥 DEBUG: Show raw rows where products should be
-  console.log(`\n🔍 DEBUG: Raw rows 1-50:`);
-  rows.slice(0, 50).forEach((r, i) => {
-    console.log(`  ${i + 1}. "${r.rawText}"`);
-  });
+  // console.log(`\n🔍 DEBUG: Raw rows 1-50:`);
+  // rows.slice(0, 50).forEach((r, i) => {
+  //   console.log(`  ${i + 1}. "${r.rawText}"`);
+  // });
 
   const mergedLines = mergePDFRowsTableAware(rows);
   debug(`📄 PDF: Merged into ${mergedLines.length} processing lines`);
   
   // 🔥 DEBUG: Show merged lines where products should be
-  console.log(`\n🔍 DEBUG: Merged lines (ALL):`);
+  // console.log(`\n🔍 DEBUG: Merged lines (ALL):`);
+  /*
   mergedLines.forEach((line, i) => {
     const hasForm = /\b(TAB|CAP|INJ|SYP|CAPS|TABLETS)\b/i.test(line);
     const hasMG = /\d+\s*(MG|ML|MCG)/i.test(line);
@@ -955,6 +956,7 @@ async function parsePDF(file) {
     
     console.log(`  ${i + 1}. "${line}"${marker}`);
   });
+  */
 
   const textLines = rows.map(r => r.rawText || "");
   const customerName = detectCustomerFromInvoice(textLines);
@@ -1165,6 +1167,9 @@ function detectExcelColumns(rows) {
         norm.includes("productname") ||
         norm.includes("itemdesc") ||
         norm.includes("description") ||
+        norm === "product" ||  // 🔥 FIX: Match exact "product"
+        norm === "item" ||     // 🔥 FIX: Match exact "item"
+        norm === "particulars" || // 🔥 FIX: Match "particulars"
         norm === "name"
       )) {
         itemNameCol = header;
@@ -1258,6 +1263,8 @@ function cleanExtractedProductName(raw = "") {
   // Step 5: Remove parentheses with RAJ inside
   cleaned = cleaned.replace(/\([^)]*RAJ[^)]*\)/gi, " ");
   
+  // console.log(`DEBUG STEP 5: "${cleaned}"`);
+  
   // Step 6: Remove "SUSP." but keep other abbreviations
   cleaned = cleaned.replace(/\bSUSP\./gi, "SUSPENSION");
 
@@ -1266,47 +1273,58 @@ function cleanExtractedProductName(raw = "") {
   cleaned = cleaned.replace(/\bSYP\./gi, "SYRUP");
 
   // Step 6b: Remove standard pack patterns (15S, 1X10)
-  cleaned = cleaned.replace(/\b\d+\s*['"`]?\s*S\b/gi, "");
+  // 🔥 FIX: Preserve the number (10) in '10 S' because it might be the strength (OLAN 10 S)
+  // The trailing number logic (Step 7) will decide if it's a pack or strength later
+  cleaned = cleaned.replace(/\b(\d+)\s*['"`]?\s*S\b/gi, "$1");
   cleaned = cleaned.replace(/\b\d+X\d+[A-Z]?\b/gi, "");
 
-  // Step 6c: Remove units (MG, ML, etc) but keep number
-  cleaned = cleaned.replace(/(\d+)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1");
+  // Step 6c: Remove units (MG, ML, etc) but keep number (Integer OR Decimal)
+  cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1");
   // Step 6d: Remove standalone units (e.g. "MOXILONG MG")
   cleaned = cleaned.replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "");
 
-  // Step 6e: Remove Form words (TABS, CAPS...)
-  cleaned = cleaned.replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT)\b/gi, "");
+  // Step 6e: Remove Form words (SELECTIVE)
+  // 1. Remove TABS/CAPS (User removed these from DB)
+  cleaned = cleaned.replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|NO|NOS|PACK|KIT)\b/gi, "");
+  
+  // 2. PRESERVE SPECIAL FORMS (User kept these in DB: SYP, INJ, GEL, etc.)
+  // We do NOT strip: INJ, INJECTION, SYP, SYRUP, SUSP, SUSPENSION, OINTMENT, GEL, CREAM, DROPS, SOL, SOLUTION, IV, INFUSION, AMP
 
   // Step 7: Remove trailing pack details
-  // Case A: Dot followed by space and digits (e.g. "80MG. 10") or just dots
-  cleaned = cleaned.replace(/\.\s*\d+[\.\s]*$/g, "");
+  // Case A: REMOVED (Was stripping valid decimals like 2.5)
+  // cleaned = cleaned.replace(/\.\s*\d+[\.\s]*$/g, "");
   
-  // Case B: Dot followed by digits, NOT preceded by digit
+  // Case B: Dot followed by digits, NOT preceded by digit (Safe)
   cleaned = cleaned.replace(/([^0-9])\s*\.\d+[\.\s]*$/g, "$1");
   
   // Clean trailing punctuation
   cleaned = cleaned.replace(/[\.\s]+$/, "");
 
   // Case D: Double number heuristic (e.g. "50 15" -> "50", "2.5 15" -> "2.5")
-  cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s+(\d+)$/, (match, p1, p2) => {
-      const strength = parseFloat(p1);
-      const trailing = parseInt(p2, 10);
-      
-      // Valid pharma strengths
-      const VALID_STRENGTHS = [
-        0.2, 0.25, 0.3, 0.5, 1, 2, 2.5, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 
-        100, 120, 150, 200, 250, 300, 325, 400, 500, 625, 650, 750, 875, 1000, 1500, 2000
-      ];
-      
-      // If first number is a valid strength AND second is likely pack (< 100)
-      // Keep only the first number (strength)
-      if (VALID_STRENGTHS.includes(strength) && trailing < 100) {
-        return p1; // Remove p2 (pack size)
-      }
-      
-      // Otherwise, keep both numbers (don't modify)
-      return match; 
-  });
+cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s+(\d+)$/, (match, p1, p2) => {
+  const strength = parseFloat(p1);
+  const trailing = parseInt(p2, 10);
+
+  // Valid pharma strengths
+  const VALID_STRENGTHS = [
+    0.2, 0.25, 0.3, 0.5, 1, 2, 2.5, 5, 10, 15, 20, 25, 30, 40, 50, 60, 75, 80, 
+    100, 120, 150, 200, 250, 300, 325, 400, 500, 625, 650, 750, 875, 1000, 1500, 2000
+  ];
+
+  // 🔥 ONLY remove if there are TWO numeric tokens originally
+  const nums = cleaned.match(/\d+(?:\.\d+)?/g) || [];
+
+  if (
+    nums.length >= 2 &&
+    VALID_STRENGTHS.includes(strength) &&
+    trailing < 100
+  ) {
+    return p1;
+  }
+
+  return match;
+});
+
 
   // Case E: Deduplicate repeated strength (e.g. "50/500 50/500" -> "50/500")
   cleaned = cleaned.replace(/(\b\d+(?:[\.\/]\d+)?(?:MG|ML|MCG|GM|G|IU|KG)?)\s+\1\b/gi, "$1");
@@ -1816,7 +1834,12 @@ function parseExcel(file) {
 ===================================================== */
 
 function parseText(file) {
-  const text = file.buffer.toString("utf8");
+  let text = file.buffer.toString("utf8");
+  // 🔥 Strip BOM (Byte Order Mark) if present
+  if (text.charCodeAt(0) === 0xFEFF) {
+    text = text.slice(1);
+  }
+  
   const lines = text.split(/\r?\n/);
   
   debug(`\n📝 Text: ${lines.length} lines`);

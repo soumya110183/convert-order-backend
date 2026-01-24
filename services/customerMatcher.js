@@ -24,6 +24,12 @@ function normalize(text = "") {
     .replace(/[.,\-&()[\]{}'"]/g, " ")  // Replace with space
     .replace(/\s+/g, " ")                // Compress spaces
     .trim();
+
+  const CUSTOMER_ALIASES = {
+    // Common mismatches
+    "SRI AYYAPPA AGENCIES": "AYYAPPA DISTRIBUTORS", // Example
+    "SABARI ASSOCIATES": "SRI SABARI AGENCIES", // Map to correct one if ambiguous
+  };
   
   // STEP 2: Remove M/S prefix
   normalized = normalized.replace(/^M\s*\/\s*S\s+/i, "");
@@ -72,7 +78,18 @@ export function stringSimilarity(a = "", b = "") {
                     (c1.includes(c2) || c2.includes(c1)) ? 0.85 : 0;
 
   // Return the best score
-  return Math.max(wordScore, charScore);
+  let finalScore = Math.max(wordScore, charScore);
+
+  // 🔥 CORE WORD BONUS: If the FIRST major word matches exactly, boost score
+  const w1 = s1.split(" ")[0];
+  const w2 = s2.split(" ")[0];
+  
+  if (w1 && w2 && w1 === w2 && w1.length > 3) {
+      finalScore += 0.35; // Boost "AYYAPPA" match
+  }
+
+  if (finalScore > 0.98 && s1 !== s2) finalScore = 0.98;
+  return finalScore;
 }
 
 /**

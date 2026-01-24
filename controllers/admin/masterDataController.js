@@ -926,22 +926,23 @@ if (multiSlabProducts.length > 0) {
 if (failedMatches.length > 0) {
     console.log(`\n⚠️  TOP FAILED MATCHES (showing up to 10):`);
     failedMatches.slice(0, 10).forEach((f, idx) => {
-        console.log(`\n${idx + 1}. Row ${f.row}: "${f.searchName}" (${f.division})`);
+        if (!f) return; // Safety check
+        console.log(`\n${idx + 1}. Row ${f.row || '?'}: "${f.searchName || '?'}" (${f.division || '?'})`);
         console.log(`   Scheme: ${f.minQty}+${f.freeQty}`);
-        console.log(`   Reason: ${f.diagnostics.reason || 'Unknown'}`);
-        if (f.diagnostics.parsed) {
+        console.log(`   Reason: ${f.diagnostics?.reason || 'Unknown'}`);
+        if (f.diagnostics?.parsed) {
             console.log(`   Parsed: base="${f.diagnostics.parsed.baseName}", strength="${f.diagnostics.parsed.dosage}"`);
         }
-        if (f.diagnostics.candidates !== undefined) {
+        if (f.diagnostics?.candidates !== undefined) {
             console.log(`   Candidates: ${f.diagnostics.candidates}`);
         }
     });
     
     console.log(`\n💡 SUGGESTIONS:`);
-    if (failedMatches.some(f => f.diagnostics.reason === 'NO_MATCH_FOUND')) {
+    if (failedMatches.some(f => f?.diagnostics?.reason === 'NO_MATCH_FOUND')) {
         console.log(`   • Add missing products to Product Master database`);
     }
-    if (failedMatches.some(f => f.diagnostics.candidates > 1)) {
+    if (failedMatches.some(f => f?.diagnostics?.candidates && f.diagnostics.candidates.length > 1)) {
         console.log(`   • Check for duplicate products with different divisions`);
     }
     console.log(`   • Verify product names in scheme Excel match Product Master`);

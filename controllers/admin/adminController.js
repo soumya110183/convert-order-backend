@@ -152,8 +152,6 @@ export async function exportMaster(req, res, next) {
 ===================================================== */
 export async function getAuditHistory(req, res, next) {
   try {
-    // Admin guard handled by middleware
-
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Number(req.query.limit) || 20, 100);
     const skip = (page - 1) * limit;
@@ -162,9 +160,10 @@ export async function getAuditHistory(req, res, next) {
     if (req.query.status) query.status = req.query.status.toUpperCase();
     if (req.query.userId) query.userId = req.query.userId;
 
-    const [total, audits] = await Promise.all([
-      InvoiceAudit.countDocuments(query),
-      InvoiceAudit.find(query)
+    // 🔥 MODIFIED: Fetch from OrderUpload (Actual User Uploads) instead of Audit Log
+    const [total, uploads] = await Promise.all([
+      OrderUpload.countDocuments(query),
+      OrderUpload.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -172,9 +171,24 @@ export async function getAuditHistory(req, res, next) {
         .lean()
     ]);
 
+    // Map to a structure appropriate for the Audit/History Table
+    const data = uploads.map(u => ({
+      _id: u._id,
+      action: "FILE_UPLOAD", // Synthetic action name
+      user: u.userId, // Populated object { name, email, _id }
+      details: u.fileName,
+      status: u.status,
+      timestamp: u.createdAt,
+      createdAt: u.createdAt,
+      // Extra fields for new frontend features
+      fileName: u.fileName,
+      processed: u.recordsProcessed,
+      failed: u.recordsFailed 
+    }));
+
     res.json({
       success: true,
-      data: audits,
+      data: data,
       pagination: {
         page,
         limit,
@@ -319,6 +333,47 @@ export async function getRecentUploadsPaginated(req, res, next) {
 }
 
 /* =====================================================
+   GET UPLOAD DETAILS (VIEW RESULT)
+   GET /api/admin/upload/:id
+===================================================== */
+export async function getUploadResult(req, res, next) {
+  try {
+    const { id } = req.params;
+    
+    const upload = await OrderUpload.findById(id)
+      .populate("userId", "name email")
+      .lean();
+
+    if (!upload) {
+      return res.status(404).json({ success: false, message: "Upload not found" });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: upload._id,
+        user: {
+          name: upload.userId?.name || "Unknown",
+          email: upload.userId?.email || ""
+        },
+        fileName: upload.fileName,
+        status: upload.status,
+        createdAt: upload.createdAt,
+        stats: {
+          processed: upload.recordsProcessed,
+          failed: upload.recordsFailed,
+          schemeCount: upload.schemeSummary?.count || 0
+        },
+        result: upload.convertedData // The actual converted rows
+      }
+    });
+
+  } catch (err) {
+    next(err);
+  }
+}
+
+/* =====================================================
    UPDATE CUSTOMER
    PUT /api/admin/customers/:id
 ===================================================== */
@@ -379,6 +434,7 @@ export default {
   getAdminDashboard,
   searchMasterData,
   getRecentUploadsPaginated, // ✅ Added
+  getUploadResult, // ✅ Added
   updateCustomer, // ✅ Added
   updateProduct // ✅ Added
 };
