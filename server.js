@@ -21,8 +21,6 @@ dotenv.config();
 
 const app = express();
 
-/* -------------------- SECURITY -------------------- */
-app.use(helmet());
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173", // vite
@@ -32,9 +30,7 @@ const allowedOrigins = [
 app.use(
   cors({
     origin: function (origin, callback) {
-      // allow requests with no origin (Postman, mobile apps)
       if (!origin) return callback(null, true);
-
       if (allowedOrigins.includes(origin)) {
         return callback(null, true);
       } else {
@@ -44,6 +40,11 @@ app.use(
     credentials: true
   })
 );
+
+/* -------------------- SECURITY -------------------- */
+app.use(helmet());
+// import { apiLimiter } from "./middlewares/rateLimiter.js";
+// app.use("/api", apiLimiter);
 
 /* -------------------- BODY PARSER -------------------- */
 app.use(express.json({ limit: "5mb" }));

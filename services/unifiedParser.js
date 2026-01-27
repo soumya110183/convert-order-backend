@@ -655,6 +655,10 @@ export function extractQuantity(text = "") {
 export function extractProductName(text, qty) {
   let t = text;
 
+  // 🔥 FIX 4: Normalize "naked" decimals FIRST (before anything else)
+  // ".25" -> "0.25", " .5" -> " 0.5"
+  t = t.replace(/(\s|^)\.(\d+)\b/g, "$10.$2");
+
   // 🔥 STEP 1: Split merged tokens
   t = t.replace(/([A-Z]{2,})(\d+X\d+[A-Z]?)/gi, '$1 $2');  // TAB1X10 -> TAB 1X10
   t = t.replace(/([A-Z]{2,})(\d+['`"]?S)/gi, '$1 $2');     // TAB15'S -> TAB 15'S
@@ -1239,10 +1243,14 @@ function detectExcelColumns(rows) {
  * PRESERVES: Strength, form words, variants
  * REMOVES: Company codes, division names, product codes
  */
+// 🔥 EXPORTED FOR TESTING (via bottom export list)
 function cleanExtractedProductName(raw = "") {
   if (!raw) return "";
   
+  // 🔥 FIX 4: Normalize "naked" decimals FIRST (before anything else)
+  // ".25" -> "0.25", " .5" -> " 0.5"
   let cleaned = raw.trim().toUpperCase();
+  cleaned = cleaned.replace(/(\s|^)\.(\d+)\b/g, "$10.$2");
   
   // Step 1: Remove company prefix (MICRO1, MICRO2, etc.)
   cleaned = cleaned.replace(/^MICRO\d+\s+/g, "");
@@ -1270,6 +1278,10 @@ function cleanExtractedProductName(raw = "") {
 
   // 🔥 NEW: Replace hyphens with spaces (Requested by user: MICRODOX-LBX -> MICRODOX LBX)
   cleaned = cleaned.replace(/-/g, " ");
+  
+  // 🔥 FIX: Remove "TAB S", "CAP S" explicitly to prevent "10 S" pack detection
+  cleaned = cleaned.replace(/\b(TAB|CAP)\s*S\b/gi, "");
+  
   cleaned = cleaned.replace(/\bSYP\./gi, "SYRUP");
 
   // Step 6b: Remove standard pack patterns (15S, 1X10)
@@ -1295,6 +1307,8 @@ function cleanExtractedProductName(raw = "") {
   // cleaned = cleaned.replace(/\.\s*\d+[\.\s]*$/g, "");
   
   // Case B: Dot followed by digits, NOT preceded by digit (Safe)
+  // 🔥 UPDATED: Only remove if it looks like a list index (e.g. "No.1") or purely punctuation
+  // Because we normalized .25 -> 0.25, this regex shouldn't trigger on 0.25 (as 0 is a digit)
   cleaned = cleaned.replace(/([^0-9])\s*\.\d+[\.\s]*$/g, "$1");
   
   // Clean trailing punctuation

@@ -213,7 +213,7 @@ function hasCompatibleVariant(invoiceText, productName) {
   // MT = Metoprolol combo, H = HCTZ combo, AT = Atorvastatin combo, TRIO = Triple combo
   // BETA = Beta blocker combo, M = Metformin combo, DC = Diclofenac/combo
   // 🔥 UPDATED: Added PLUS, FORTE, GOLD, CV, LBX to strict list to prevent false positives
-  const strict = ['OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS', 'DC', 'PLUS', 'FORTE', 'GOLD', 'CV', 'LBX'];
+  const strict = ['OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS', 'DC', 'PLUS', 'FORTE', 'GOLD', 'CV', 'LBX', 'M'];
 
   const invStrict = inv.filter(v => strict.includes(v));
   const prodStrict = prod.filter(v => strict.includes(v));

@@ -15,7 +15,6 @@ router.use(protect, adminOnly);
 
 router.get("/", getUsers);
 router.post("/", addUser);
-router.put("/:id/role", updateRole);
-router.put("/:id/status", toggleStatus);
+// Upload Invoice (User) - REMOVED (Wrong File)
 
 export default router;

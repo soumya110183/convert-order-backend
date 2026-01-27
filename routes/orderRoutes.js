@@ -47,8 +47,16 @@ router.use(protect);
 
 /* ================== FLOW ================== */
 
+// import { uploadLimiter } from "../middlewares/rateLimiter.js";
+
+// Upload endpoint
+// router.post("/upload", uploadLimiter, upload.single("file"), extractOrderFields); 
+// Disabling limiter as per user request
+router.post("/upload", upload.single("file"), extractOrderFields);
+import { validateFile } from "../middlewares/inputValidation.js";
+
 // Step 1: Upload & extract
-router.post("/extract", upload.single("file"), extractOrderFields);
+router.post("/extract", upload.single("file"), validateFile, extractOrderFields);
 
 // Step 2: Convert
 // Step 2: Convert
