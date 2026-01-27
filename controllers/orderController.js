@@ -416,10 +416,12 @@ export const convertOrders = async (req, res, next) => {
       });
     }
 
-    const upload = await OrderUpload.findOne({ 
-      _id: uploadId, 
-      userId: req.user.id 
-    });
+    const query = { _id: uploadId };
+    if (req.user.role !== "admin") {
+      query.userId = req.user.id;
+    }
+
+    const upload = await OrderUpload.findOne(query);
 
     if (!upload) {
       return res.status(404).json({ 
@@ -1104,10 +1106,12 @@ export const generateDivisionReport = async (req, res, next) => {
   try {
     const { uploadId, dataRows, customerCode, division } = req.body;
 
-    const upload = await OrderUpload.findOne({ 
-      _id: uploadId, 
-      userId: req.user.id 
-    });
+    const query = { _id: uploadId };
+    if (req.user.role !== "admin") {
+      query.userId = req.user.id;
+    }
+
+    const upload = await OrderUpload.findOne(query);
 
     if (!upload) {
       return res.status(404).json({ success: false, message: "Order not found" });

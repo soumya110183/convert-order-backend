@@ -59,15 +59,26 @@ export async function downloadConvertedFile(req, res, next) {
   try {
     const { id, type } = req.params;
 
-    const upload = await OrderUpload.findOne({
-      _id: id,
-      userId: req.user.id
-    });
+    console.log(`\n📥 DOWNLOAD REQUEST: ID=${id}, TYPE=${type || 'N/A'}`);
+    console.log(`   User: ${req.user?._id} (${req.user?.role})`);
+
+    // 🔥 REFACTOR: Fetch first, then check permissions (cleaner debug)
+    const upload = await OrderUpload.findById(id);
 
     if (!upload) {
+      console.warn("❌ Upload not found in DB");
       return res.status(404).json({
         success: false,
         message: "Upload not found"
+      });
+    }
+
+    // Auth check
+    if (req.user.role !== "admin" && upload.userId.toString() !== req.user.id) {
+      console.warn("❌ Authorization failed");
+      return res.status(403).json({
+        success: false,
+        message: "You are not authorized to view this file"
       });
     }
 
@@ -79,6 +90,8 @@ export async function downloadConvertedFile(req, res, next) {
     }
 
     let fileName = upload.outputFile;
+    console.log(`   Initial fileName: ${fileName}`);
+    console.log(`   OutputFiles: ${JSON.stringify(upload.outputFiles)}`);
     
     // Handle specific file types
     if (type && upload.outputFiles && upload.outputFiles.length > 0) {
@@ -87,11 +100,15 @@ export async function downloadConvertedFile(req, res, next) {
         fileName = upload.outputFiles.find(f => f.startsWith('sheet-orders')) || upload.outputFiles[0];
       } else if (type === 'main') {
         // Convention: Second file is main/standard
-        fileName = upload.outputFiles.find(f => f.startsWith('main-order')) || upload.outputFiles[1];
+        // 🔥 FIX: If only 1 file exists (no sheets), use that as "main" as well
+        fileName = upload.outputFiles.find(f => f.startsWith('main-order')) || (upload.outputFiles.length > 1 ? upload.outputFiles[1] : upload.outputFiles[0]);
       }
     }
 
+    console.log(`   Resolved fileName: ${fileName}`);
+
     if (!fileName) {
+      console.warn("❌ Filename could not be resolved");
       return res.status(404).json({
         success: false,
         message: "Converted file missing"
@@ -99,12 +116,37 @@ export async function downloadConvertedFile(req, res, next) {
     }
 
     const filePath = path.resolve("uploads", fileName);
+    const exists = fs.existsSync(filePath);
+    console.log(`   FilePath: ${filePath}`);
+    console.log(`   Exists: ${exists}`);
 
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        success: false,
-        message: "File not found on server"
-      });
+    if (!exists) {
+      console.warn("⚠️ File missing from disk even though DB says it exists. Attempting to regenerate...");
+      
+      try {
+        if (!upload.convertedData || !upload.convertedData.rows || upload.convertedData.rows.length === 0) {
+           throw new Error("No converted data available to regenerate file");
+        }
+
+        // Dynamically import generator
+        const { generateOrderExcel, saveWorkBook } = await import("../utils/excelGenerator.js");
+        const wb = generateOrderExcel(upload.convertedData.rows, "Converted Orders");
+        saveWorkBook(wb, fileName);
+        
+        console.log("✅ File regenerated successfully!");
+        
+        // Re-check existence
+         if (!fs.existsSync(filePath)) {
+             throw new Error("Regeneration failed to save file to expected path");
+        }
+
+      } catch (regenError) {
+        console.error("❌ Regeneration failed:", regenError);
+        return res.status(404).json({
+          success: false,
+          message: "File not found on server and could not be regenerated"
+        });
+      }
     }
 
     return res.download(
@@ -128,10 +170,12 @@ export async function previewConvertedOrders(req, res, next) {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const skip = (page - 1) * limit;
 
-    const upload = await OrderUpload.findOne({
-      _id: req.params.id,
-      userId: req.user.id
-    }).lean();
+    const query = { _id: req.params.id };
+    if (req.user.role !== "admin") {
+      query.userId = req.user.id;
+    }
+
+    const upload = await OrderUpload.findOne(query).lean();
 
     if (!upload) {
       return res.status(404).json({
@@ -173,10 +217,21 @@ export async function downloadSchemeFile(req, res, next) {
   try {
     const { id } = req.params;
 
-    const upload = await OrderUpload.findOne({
-      _id: id,
-      userId: req.user.id
-    }).lean(); // ✅ VERY IMPORTANT
+    const upload = await OrderUpload.findById(id).lean();
+
+    if (!upload) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload not found"
+      });
+    }
+
+    if (req.user.role !== "admin" && upload.userId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
 
     if (!upload) {
       return res.status(404).json({
@@ -294,10 +349,21 @@ export async function previewSchemeData(req, res, next) {
     const limit = Math.min(Number(req.query.limit) || 50, 200);
     const skip = (page - 1) * limit;
 
-    const upload = await OrderUpload.findOne({
-      _id: req.params.id,
-      userId: req.user.id
-    }).lean();
+    const upload = await OrderUpload.findById(req.params.id).lean();
+
+    if (!upload) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload not found"
+      });
+    }
+
+    if (req.user.role !== "admin" && upload.userId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
 
     if (!upload) {
       return res.status(404).json({
@@ -350,10 +416,21 @@ export async function updateConvertedData(req, res, next) {
       });
     }
 
-    const upload = await OrderUpload.findOne({
-      _id: id,
-      userId: req.user.id
-    });
+    const upload = await OrderUpload.findById(id);
+
+    if (!upload) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload not found"
+      });
+    }
+
+    if (req.user.role !== "admin" && upload.userId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
 
     if (!upload) {
       return res.status(404).json({
@@ -600,10 +677,21 @@ export async function updateSchemeData(req, res, next) {
       });
     }
 
-    const upload = await OrderUpload.findOne({
-      _id: id,
-      userId: req.user.id
-    });
+    const upload = await OrderUpload.findById(id);
+
+    if (!upload) {
+      return res.status(404).json({
+        success: false,
+        message: "Upload not found"
+      });
+    }
+
+    if (req.user.role !== "admin" && upload.userId.toString() !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized"
+      });
+    }
 
     if (!upload) {
       return res.status(404).json({
