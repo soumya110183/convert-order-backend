@@ -2,7 +2,7 @@ import crypto from "crypto";
 import XLSX from "xlsx-js-style";
 
 
-import { parseInvoice } from "../../services/invoiceParserService.js";
+import { unifiedExtract } from "../../services/unifiedParser.js";
 import { buildOrderTrainingRows } from "../../services/orderTrainingService.js";
 import InvoiceAudit from "../../models/invoiceAudit.js";
 
@@ -60,7 +60,9 @@ export async function processInvoice(req, res, next) {
     });
 
     /* ---------- Parse invoice ---------- */
-    const invoiceItems = await parseInvoice(req.file);
+    // 🔥 FIX: Use unified parser and extract dataRows
+    const extractionResult = await unifiedExtract(req.file);
+    const invoiceItems = extractionResult.dataRows || [];
 
     if (!invoiceItems.length) {
       audit.status = "FAILED";
