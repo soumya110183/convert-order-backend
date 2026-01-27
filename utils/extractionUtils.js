@@ -104,12 +104,11 @@ export function normalizeStrength(strength = "") {
   // Normalize long-form units to short form first
   s = s
     .replace(/MILLIGRAMS?/g, "MG")
-    .replace(/GRAMS?/g, "G")
+    .replace(/GRAMS?/g, "GM") 
     .replace(/MILLILITERS?/g, "ML");
 
-  // 🔥 CRITICAL: Remove all units for unit-agnostic matching
-  // This allows "1500MG" to match "1500" and vice versa
-  s = s.replace(/(MG|ML|MCG|GM|G|IU|KG)\b/gi, "");
+  // USEREQ: Don't strip MG/GM. Keep them for explicit output.
+  // s = s.replace(/(MG|ML|MCG|IU|KG)\b/gi, ""); <-- REMOVED
 
   return s;
 }
@@ -125,10 +124,45 @@ export function hasCompatibleStrength(invoiceText, productName) {
   // Both missing → allow
   if (!inv && !prod) return true;
 
-  // Both present → MUST match exactly
-  if (inv && prod) return inv === prod;
+  // Both present → Check logic
+  if (inv && prod) {
+      if (inv === prod) return true;
 
-  // Only one has strength → REJECT (strict mode for accuracy)
+      const parse = (s) => {
+        const num = parseFloat(s);
+        const unit = s.replace(/[0-9.]/g, "") || null;
+        return { num, unit };
+      };
+
+      const i = parse(inv);
+      const p = parse(prod);
+
+      // Numeric mismatch check
+      if (i.num !== p.num) {
+          // 🔥 DOLO SPECIAL CASE: 1000 (mg) == 1 (gm)
+          // strict check for "DOLO" in text
+          const isDolo = (invoiceText.toUpperCase().includes("DOLO") || productName.toUpperCase().includes("DOLO"));
+          
+          if (isDolo) {
+             if ((i.num === 1000 && i.num === p.num * 1000) || 
+                 (p.num === 1000 && p.num === i.num * 1000)) {
+                 return true;
+             }
+          }
+          return false;
+      }
+
+      // If numbers match (e.g. 500 vs 500), check units
+      // If both have units, they MUST match (e.g. 500MG != 500ML)
+      // If one is unitless (e.g. 500 vs 500MG), accept as implied match
+      if (i.unit && p.unit && i.unit !== p.unit) {
+          return false;
+      }
+
+      return true;
+  }
+
+  // Only one has strength → REJECT (strict mode for safety)
   return false;
 }
 

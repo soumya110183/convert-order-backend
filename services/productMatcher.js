@@ -9,7 +9,11 @@
    Solution: Only remove NOISE, keep product identity
 ===================================================== */
 
-import { extractStrength } from "../utils/extractionUtils.js";
+import { 
+  extractStrength, 
+  normalizeStrength, 
+  hasCompatibleStrength 
+} from "../utils/extractionUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
 import { normalizeProductName } from "../utils/productNormalizer.js";
 
@@ -152,47 +156,11 @@ function cleanInvoiceProduct(text) {
 }
 
 /* =====================================================
-   FIX 2: ENHANCED STRENGTH EXTRACTION
-===================================================== */
-
-
-
-function normalizeStrength(strength = "") {
-  if (!strength) return "";
-
-  return strength
-    .toUpperCase()
-    // Remove all spaces first
-    .replace(/\s+/g, "")
-    // Normalize combo units - remove MG, ML, MCG, GM, G after numbers
-    .replace(/(\d+(?:\.\d+)?)(MG|ML|MCG|GM|G)\b/gi, "$1")
-    // Normalize multiple slashes to single slash
-    .replace(/\/+/g, "/")
-    // Remove any remaining spaces
-    .replace(/\s+/g, "")
-    .trim();
-}
-
-
-/* =====================================================
    FIX 3: RELAXED COMPATIBILITY CHECKS
+   (Now imported from utils/extractionUtils.js)
 ===================================================== */
-function hasCompatibleStrength(invoiceText, productName) {
-  const inv = normalizeStrength(extractStrength(invoiceText));
-  const prod = normalizeStrength(extractStrength(productName));
+// Local functions removed to use centralized logic
 
-  // 🔥 STRICT: Both must have strength and match, OR both must be absent
-  if (!inv && !prod) return true; // Both absent = OK
-  if (inv && prod) return inv === prod; // Both present = Must match
-
-  // ❌ One has strength, other doesn't = NOT compatible
-  // This prevents "MECONERV 500" from matching "MECONERV" automatically
-  if ((inv && !prod) || (!inv && prod)) {
-     // console.log(`    ⚠️ Strength Mismatch: Inv='${inv}' vs Prod='${prod}' (One missing)`);
-     return false;
-  }
-  return false;
-}
 
 
 
