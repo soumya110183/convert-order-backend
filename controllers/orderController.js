@@ -892,10 +892,14 @@ if (hasSheets) {
 
 export const getOrderById = async (req, res, next) => {
   try {
-    const upload = await OrderUpload.findOne({
-      _id: req.params.id,
-      userId: req.user.id
-    }).lean();
+    const query = { _id: req.params.id };
+    
+    // Only restrict by user ID if NOT admin
+    if (req.user.role !== "admin") {
+      query.userId = req.user.id;
+    }
+
+    const upload = await OrderUpload.findOne(query).lean();
 
     if (!upload) {
       return res.status(404).json({ success: false, message: "Order not found" });
