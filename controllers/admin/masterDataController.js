@@ -112,6 +112,518 @@ function getSchemeRowValues(row, lastProductName = "") {
 /* =====================================================
    MASTER DATABASE UPLOAD
 ===================================================== */
+/* =====================================================
+   MASTER DATABASE UPLOAD
+===================================================== */
+
+export const uploadCustomerMaster = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "NO_FILE" });
+
+    const sheets = readExcelSheets(req.file.buffer);
+    const customerRows = findSheet(sheets, ["customer"]) || [];
+
+    if (!customerRows.length) {
+       // Try just taking the first sheet if no specific name matches
+       const firstSheetName = Object.keys(sheets)[0];
+       if (firstSheetName) {
+         // return res.status(400).json({ error: "NO_CUSTOMER_SHEET" });
+         // OPTIONAL: Fallback to first sheet
+       }
+    }
+
+    const customerOps = customerRows.map(r => {
+      const customerCode = (r["customer code"] || r["code"] || r["sap code"])?.toString().trim();
+      const customerName = (r["customer name"] || r["name"])?.toString().trim();
+      
+      if (!customerCode || !customerName) return null;
+
+      return {
+        updateOne: {
+          filter: { customerCode },
+          update: {
+            $set: {
+              customerType: (r["customer type"] || r["type"])?.toString().trim() || "",
+              customerName: customerName || "",
+              address1: r["address 1"]?.toString().trim(),
+              address2: r["address 2"]?.toString().trim(),
+              address3: r["address 3"]?.toString().trim(),
+              city: r["city"]?.toString().trim(),
+              pinCode: r["pin code"]?.toString().trim(),
+              state: r["state"]?.toString().trim(),
+              contactPerson: r["contact person"]?.toString().trim(),
+              phoneNo1: r["phone no1"]?.toString().trim(),
+              phoneNo2: r["phone no2"]?.toString().trim(),
+              mobileNo: r["mobile no"]?.toString().trim(),
+              drugLicNo: r["drug lic no"]?.toString().trim(),
+              drugLicFromDt: r["drug lic from dt"]?.toString().trim(),
+              drugLicToDt: r["drug lic to dt"]?.toString().trim(),
+              drugLicNo1: r["drug lic no1"]?.toString().trim(),
+              drugLicFromDt1: r["drug lic from dt1"]?.toString().trim(),
+              drugLicToDt1: r["drug lic to dt1"]?.toString().trim(),
+              gstNo: r["gst no"]?.toString().trim(),
+              email: r["e mail"]?.toString().trim()
+            }
+          },
+          upsert: true
+        }
+      };
+    }).filter(Boolean);
+
+    if (customerOps.length) {
+      const result = await CustomerMaster.bulkWrite(customerOps);
+      res.json({
+        success: true,
+        message: `Processed ${customerOps.length} customers`,
+        inserted: result.upsertedCount,
+        updated: result.modifiedCount
+      });
+    } else {
+      res.json({ success: true, message: "No valid customer rows found" });
+    }
+
+  } catch (err) {
+    console.error("UPLOAD CUSTOMER FAILED:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+export const uploadProductMaster = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "NO_FILE" });
+
+    const sheets = readExcelSheets(req.file.buffer);
+    const productRows = findSheet(sheets, ["sap", "product", "item"]) || [];
+    // Fallback to first sheet if only 1 sheet?
+    
+    const productOps = productRows.map(r => {
+        const productCode = (r["Sap Code"] || r["sap code"] || r["SAP CODE"] || r["Product Code"])?.toString().trim();
+        const rawProductName = (r["Item Desc"] || r["item desc"] || r["ITEM DESC"] || r["Product Name"])?.toString().trim();
+        const division = (r["DVN"] || r["dvn"] || r["Dvn"] || r["Division"])?.toString().trim();
+        const pack = Number(r["Pack"] || r["pack"] || r["PACK"] || 0);
+        const boxPack = Number(r["Box Pack"] || r["box pack"] || r["BOX PACK"] || 0);
+    
+        if (!productCode || !rawProductName) return null;
+    
+        function cleanNameForDB(name = "") {
+            return name
+              .replace(/\b(\d+)\s*['`"]?S\b/gi, "") 
+              .replace(/\b\d+X\d+\b/gi, "")        
+              .replace(/\s+/g, " ")
+              .trim();
+        }
+    
+        const cleanDBName = cleanNameForDB(rawProductName);
+        const { name, strength, variant, form } = splitProduct(cleanDBName);
+    
+        if (!name) return null;
+    
+        let finalForm = "";
+        if (form && /INJ|INJECTION|SYRUP|SYP|DROPS|GEL|OINTMENT|OINT|CREAM|SACHET/i.test(form)) {
+            finalForm = form;
+        }
+    
+        const reallyFinalName = [name, finalForm, variant, strength].filter(Boolean).join(" ");
+        const cleanedProductName = [name, strength, variant].filter(Boolean).join(" ");
+    
+        return {
+          updateOne: {
+            filter: { productCode },
+            update: {
+              $set: {
+                productCode,
+                productName: reallyFinalName,
+                baseName: name,
+                dosage: strength || null,
+                variant: variant || null,
+                cleanedProductName,
+                division: division || "",
+                pack: pack,
+                boxPack: boxPack
+              }
+            },
+            upsert: true
+          }
+        };
+      }).filter(Boolean);
+
+      if (productOps.length) {
+        const result = await ProductMaster.bulkWrite(productOps);
+        res.json({
+            success: true,
+            message: `Processed ${productOps.length} products`,
+            inserted: result.upsertedCount,
+            updated: result.modifiedCount
+        });
+      } else {
+        res.json({ success: true, message: "No valid product rows found" });
+      }
+
+  } catch (err) {
+    console.error("UPLOAD PRODUCT FAILED:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+
+export const uploadSchemeMaster = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "NO_FILE_UPLOADED" });
+    }
+
+    // 1. Fetch Products for Matching
+    const allProducts = await ProductMaster.find({}).lean();
+    
+    // 2. Read Sheets
+    const rawSheets = readExcelMatrix(req.file.buffer);
+    const schemeRowsRaw = 
+      Object.entries(rawSheets).find(([k]) =>
+        k.toLowerCase().includes("scheme")
+      )?.[1] || [];
+
+    // 3. Wipe Old Schemes
+    if (schemeRowsRaw.length > 0) {
+        await SchemeMaster.deleteMany({}); 
+    }
+
+    const blockDivisions = {}; 
+    let skippedSchemes = 0;
+    let processedSlabs = 0;
+    const failedMatches = []; 
+    const schemeMap = new Map();
+    const lastBlockProducts = {}; 
+
+    // 4. Detect Divisions
+    const blockCols = new Set();
+    for (const row of schemeRowsRaw) {
+        const rowStr = row.map(c => String(c || "")).join(" ");
+        if (/DIVISION\s*:/i.test(rowStr)) {
+            row.forEach((cell, idx) => {
+                if (cell && /DIVISION\s*:/i.test(cell)) blockCols.add(idx);
+            });
+        }
+    }
+    const BLOCK_STARTS = Array.from(blockCols).map(Number).sort((a,b) => a-b);
+    if (BLOCK_STARTS.length === 0) BLOCK_STARTS.push(0, 5); 
+
+    // HELPER: Matcher
+    function findBestProductMatch(searchName, currentDivision, allProducts, diagnostics = {}) {
+        if (!searchName || searchName.length < 2) {
+            diagnostics.reason = "Search name too short";
+            return null;
+        }
+        
+        const { name: baseName, strength: dosage, variant } = splitProduct(searchName);
+        const normDivision = normalizeDivision(currentDivision);
+        const normBase = normalizeMedicalTerms(baseName);
+        const cleanedSearchName = [baseName, dosage, variant]
+            .filter(Boolean).join(' ').trim().toUpperCase();
+    
+        diagnostics.parsed = { baseName, dosage, variant };
+        diagnostics.normalized = { cleanedSearchName, normBase, normDivision };
+    
+        // Strategy 1: Product code exact match
+        if (/^[A-Z0-9]{4,10}$/.test(searchName)) {
+            const match = allProducts.find(p => p.productCode === searchName);
+            if (match) {
+                diagnostics.matchType = "PRODUCT_CODE_EXACT";
+                return match;
+            }
+        }
+    
+        // Strategy 2: Exact name + division
+        let match = allProducts.find(p =>
+            normalizeMedicalTerms(p.cleanedProductName || p.productName) === normalizeMedicalTerms(cleanedSearchName) &&
+            normalizeDivision(p.division) === normDivision
+        );
+        if (match) {
+            diagnostics.matchType = "EXACT_NAME_DIVISION";
+            return match;
+        }
+    
+        // Strategy 3: Base name + division (Strict Strength Check)
+        match = allProducts.find(p => {
+            const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+            const pDosage = p.dosage ? normalizeMedicalTerms(p.dosage) : "";
+            const searchDosage = dosage ? normalizeMedicalTerms(dosage) : "";
+    
+            if (pBase !== normBase) return false;
+            if (normalizeDivision(p.division) !== normDivision) return false;
+    
+            const normalizeDosage = (d) => d ? d.replace(/[A-Z\s]+$/i, "") : "";
+            const sDosageNorm = normalizeDosage(searchDosage);
+            const pDosageNorm = normalizeDosage(pDosage);
+    
+            if (sDosageNorm && pDosageNorm && sDosageNorm !== pDosageNorm) return false;
+            if (sDosageNorm && !pDosageNorm) return false;
+            if (!sDosageNorm && pDosageNorm) return false;
+    
+            return true;
+        });
+    
+        if (match) {
+            diagnostics.matchType = "BASE_NAME_DIVISION_STRICT";
+            return match;
+        }
+    
+        // Strategy 3b: Relaxed Strength
+        match = allProducts.find(p => {
+            const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+            const pDosage = p.dosage ? normalizeMedicalTerms(p.dosage) : "";
+            const searchDosage = dosage ? normalizeMedicalTerms(dosage) : "";
+            
+            if (pBase !== normBase) return false;
+            if (normalizeDivision(p.division) !== normDivision) return false;
+            if (searchDosage && !pDosage) return true;
+    
+            return false;
+        });
+    
+        if (match) {
+            diagnostics.matchType = "BASE_NAME_DIVISION_RELAXED";
+            return match;
+        }
+    
+        // Strategy 3c: Starts with
+        match = allProducts.find(p => {
+            const pName = normalizeMedicalTerms(p.cleanedProductName || p.productName);
+            const searchNorm = normalizeMedicalTerms(cleanedSearchName);
+            return (pName.startsWith(searchNorm) || searchNorm.startsWith(pName)) && 
+                   normalizeDivision(p.division) === normDivision;
+        });
+        if (match) {
+            diagnostics.matchType = "STARTS_WITH_DIVISION";
+            return match;
+        }
+    
+        // Strategy 4: Fuzzy division
+        match = allProducts.find(p =>
+            normalizeMedicalTerms(p.cleanedProductName || p.productName) === normalizeMedicalTerms(cleanedSearchName) &&
+            normalizeDivisionAlias(p.division) === normalizeDivisionAlias(currentDivision)
+        );
+        if (match) {
+            diagnostics.matchType = "FUZZY_DIVISION";
+            return match;
+        }
+    
+        // Strategy 5: Partial match
+        match = allProducts.find(p => {
+            const pBase = normalizeMedicalTerms(p.baseName || p.productName);
+            return (pBase.includes(normBase) || normBase.includes(pBase)) &&
+                   normalizeDivisionAlias(p.division) === normalizeDivisionAlias(currentDivision) &&
+                   baseName.length >= 2; 
+        });
+        if (match) {
+            diagnostics.matchType = "PARTIAL_NAME_DIVISION";
+            return match;
+        }
+    
+        diagnostics.reason = "NO_MATCH_FOUND";
+        return null;
+    }
+
+    // 5. Process Rows
+    const lastProductByBlock = {}; 
+    let rowsProcessed = 0;
+    let rowsSkipped = 0;
+
+    for (let rIndex = 0; rIndex < schemeRowsRaw.length; rIndex++) {
+        const row = schemeRowsRaw[rIndex];
+        const rowStr = row.map(c => c ? String(c).trim() : "").join(" ");
+    
+        if (/DIVISION\s*:/i.test(rowStr)) {
+            for (let colIndex = 0; colIndex < row.length; colIndex++) {
+                const cell = row[colIndex] ? String(row[colIndex]).trim() : "";
+                if (/DIVISION\s*:/i.test(cell)) {
+                    const divMatch = cell.match(/DIVISION\s*:\s*([A-Z0-9\-\s]+)/i);
+                    if (divMatch) {
+                        const divName = divMatch[1].trim().toUpperCase();
+                        blockDivisions[colIndex] = divName;
+                    }
+                }
+            }
+            continue;
+        }
+        if (/Charge|Total|C\s*Box|Scheme\s*Calculation|Product\s*Pack/i.test(rowStr)) continue;
+        if (/PRODUCT.*MIN.*QTY/i.test(rowStr)) continue;
+        if (/^SCHEME\s*%$/i.test(rowStr)) continue;
+    
+        for (const blockStart of BLOCK_STARTS) {
+            const pName = row[blockStart];
+            const minQ = row[blockStart + 1];
+            const freeQ = row[blockStart + 2];
+            const pct = row[blockStart + 3];
+    
+            if (!pName && !minQ && !freeQ && !pct) continue;
+            
+            let productName = pName ? String(pName).trim() : "";
+            
+            if ((!productName || /^\d+$/.test(productName)) && (minQ || freeQ || pct)) {
+                productName = lastProductByBlock[blockStart] || "";
+            }
+            
+            if (!productName || 
+                productName.length < 2 || 
+                /^PRODUCT$/i.test(productName) || 
+                /^MIN$/i.test(productName) ||
+                /^QTY$/i.test(productName) ||
+                /^FREE$/i.test(productName) ||
+                (/^\d+$/.test(productName) && !lastProductByBlock[blockStart])) {
+                continue;
+            }
+    
+            if (productName && productName.length > 2 && !/^\d+$/.test(productName)) {
+                lastProductByBlock[blockStart] = productName;
+            }
+    
+            let minQty = Number(minQ) || 0;
+            let freeQty = Number(freeQ) || 0;
+            let schemePercent = Number(pct) || 0;
+            
+            if (schemePercent > 0 && schemePercent <= 1) {
+            } else if (schemePercent > 1 && schemePercent <= 100) {
+                schemePercent = schemePercent / 100;
+            }
+    
+            if (minQty === 0 && freeQty === 0 && schemePercent === 0) {
+                rowsSkipped++;
+                continue;
+            }
+    
+            if (schemePercent > 1.5 || (schemePercent * 100) > 150) {
+                rowsSkipped++;
+                continue;
+            }
+    
+            rowsProcessed++;
+    
+            const cleanProductName = productName.replace(/\s+/g, " ").trim();
+            let potentialNames = [];
+    
+            if (cleanProductName.includes("/")) {
+                const slashMatch = cleanProductName.match(/^([A-Z\s\-]+?)\s+(\d+)\/(.+)$/i);
+                if (slashMatch) {
+                    const base = slashMatch[1].trim();
+                    const first = slashMatch[2].trim();
+                    const rest = slashMatch[3].split("/").map(s => s.trim());
+                    
+                    potentialNames.push(`${base} ${first}`);
+                    rest.forEach(r => {
+                        potentialNames.push(/^\d+$/.test(r) ? `${base} ${r}` : r);
+                    });
+                } else {
+                    potentialNames = cleanProductName.split("/").map(s => s.trim());
+                }
+            } else {
+                potentialNames.push(cleanProductName);
+            }
+    
+            const currentDivision = blockDivisions[blockStart];
+            if (!currentDivision) {
+                skippedSchemes++;
+                continue;
+            }
+    
+            for (const searchName of potentialNames) {
+                if (!searchName || searchName.length < 2) continue;
+    
+                const diagnostics = {};
+                const matchedProduct = findBestProductMatch(searchName, currentDivision, allProducts, diagnostics);
+    
+                if (!matchedProduct) {
+                    skippedSchemes++;
+                    if (failedMatches.length < 50) {
+                        failedMatches.push({
+                            row: rIndex + 1,
+                            searchName,
+                            division: currentDivision,
+                            minQty,
+                            freeQty,
+                            diagnostics
+                        });
+                    }
+                    continue;
+                }
+    
+                const slab = {
+                    minQty,
+                    freeQty,
+                    schemePercent: Number(schemePercent.toFixed(4))
+                };
+    
+                const normDiv = normalizeDivision(currentDivision);
+                const key = `${matchedProduct.productCode}|${normDiv}`;
+                
+                if (!schemeMap.has(key)) {
+                    schemeMap.set(key, {
+                        productCode: matchedProduct.productCode,
+                        productName: matchedProduct.productName,
+                        division: normDiv,
+                        slabs: []
+                    });
+                }
+                
+                schemeMap.get(key).slabs.push(slab);
+                processedSlabs++;
+            }
+        }
+    }
+
+    // 6. DB Bulk Write
+    const schemeOps = [];
+    let totalUniqueSchemes = 0;
+    
+    for (const [key, data] of schemeMap.entries()) {
+        const uniqueSlabs = data.slabs.filter((slab, index, self) =>
+            index === self.findIndex((t) => (
+                t.minQty === slab.minQty &&
+                t.freeQty === slab.freeQty &&
+                Math.abs(t.schemePercent - slab.schemePercent) < 0.0001
+            ))
+        );
+    
+        uniqueSlabs.sort((a, b) => a.minQty - b.minQty);
+        totalUniqueSchemes++;
+    
+        schemeOps.push({
+            updateOne: {
+                filter: {
+                    productCode: data.productCode,
+                    division: data.division
+                },
+                update: {
+                    $set: {
+                        productCode: data.productCode,
+                        productName: data.productName,
+                        division: data.division,
+                        isActive: true,
+                        slabs: uniqueSlabs
+                    }
+                },
+                upsert: true
+            }
+        }); 
+    }
+
+    if (schemeOps.length > 0) {
+        const result = await SchemeMaster.bulkWrite(schemeOps);
+    }
+
+    res.json({
+        success: true,
+        message: "Schemes uploaded",
+        docs: totalUniqueSchemes,
+        slabs: processedSlabs,
+        skipped: skippedSchemes
+    });
+
+  } catch (err) {
+    console.error("UPLOAD SCHEME FAILED:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
 export const uploadMasterDatabase = async (req, res) => {
   let session = null;
   // const session = await mongoose.startSession();
@@ -1021,6 +1533,74 @@ function extractPackSize(desc) {
 /* =====================================================
    EXPORT MASTER DATABASE
 ===================================================== */
+
+
+export const exportCustomers = async (req, res) => {
+    try {
+        const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();
+        const wb = XLSX.utils.book_new();
+        const customerData = customers.map(c => ({
+            "Code": c.customerCode || "",
+            "Customer Type": c.customerType || "",
+            "Customer Name": c.customerName || "",
+            "Address 1": c.address1 || "",
+            "City": c.city || "",
+            "State": c.state || "",
+            "GST": c.gstNo || ""
+        })); // Simplified for now, or match full export
+        const sheet = XLSX.utils.json_to_sheet(customerData);
+        XLSX.utils.book_append_sheet(wb, sheet, "Customers");
+        const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename=customers-${Date.now()}.xlsx`);
+        res.send(buffer);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+export const exportProducts = async (req, res) => {
+    try {
+        const products = await ProductMaster.find().sort({ productName: 1 }).lean();
+        const wb = XLSX.utils.book_new();
+        const data = products.map(p => ({
+            "Sap Code": p.productCode,
+            "Item Desc": p.productName,
+            "Dvn": p.division || ""
+        }));
+        const sheet = XLSX.utils.json_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, sheet, "Products");
+        const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename=products-${Date.now()}.xlsx`);
+        res.send(buffer);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
+export const exportSchemes = async (req, res) => {
+    try {
+        const schemes = await SchemeMaster.find().lean();
+        const wb = XLSX.utils.book_new();
+        const data = schemes.flatMap(s => (s.slabs || []).map(slab => ({
+            "Division": s.division,
+            "Product": s.productName,
+            "Min Qty": slab.minQty,
+            "Free Qty": slab.freeQty,
+            "Scheme %": slab.schemePercent * 100
+        })));
+        const sheet = XLSX.utils.json_to_sheet(data);
+        XLSX.utils.book_append_sheet(wb, sheet, "Schemes");
+        const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
+        res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        res.setHeader("Content-Disposition", `attachment; filename=schemes-${Date.now()}.xlsx`);
+        res.send(buffer);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+};
+
 export const exportMasterDatabase = async (req, res) => {
   try {
     const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();

@@ -16,6 +16,12 @@ import {
   createScheme,
   updateScheme,
   deleteScheme,
+  uploadCustomerMaster,
+  uploadProductMaster,
+  uploadSchemeMaster,
+  exportCustomers,
+  exportProducts,
+  exportSchemes
 } from "../../controllers/admin/masterDataController.js";
 
 const router = express.Router();
@@ -80,5 +86,14 @@ router.get("/schemes", getSchemes);
 router.post("/schemes", createScheme);
 router.put("/schemes/:id", updateScheme);
 router.delete("/schemes/:id", deleteScheme);
+
+router.post("/customers/upload", upload.single("file"), uploadCustomerMaster);
+router.get("/customers/export", exportCustomers);
+
+router.post("/products/upload", upload.single("file"), uploadProductMaster);
+router.get("/products/export", exportProducts);
+
+router.post("/schemes/upload", upload.single("file"), uploadSchemeMaster);
+router.get("/schemes/export", exportSchemes);
 
 export default router;
