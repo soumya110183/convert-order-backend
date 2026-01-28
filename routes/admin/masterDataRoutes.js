@@ -21,7 +21,8 @@ import {
   uploadSchemeMaster,
   exportCustomers,
   exportProducts,
-  exportSchemes
+  exportSchemes,
+  getDivisions
 } from "../../controllers/admin/masterDataController.js";
 
 const router = express.Router();
@@ -46,6 +47,9 @@ router.post("/master/upload", upload.single("file"), uploadMasterDatabase);
 
 // Export master database
 router.get("/master/export", exportMasterDatabase);
+
+// Get unique divisions
+router.get("/master/divisions", getDivisions);
 
 // =====================================================
 // CUSTOMER ROUTES

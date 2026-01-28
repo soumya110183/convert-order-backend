@@ -1910,7 +1910,8 @@ const product = await ProductMaster.create({
   dosage: strength || null,
   variant: variant || "",
   productName: productName.trim(),
-  division: division?.trim()
+  division: division?.trim(),
+  boxPack: req.body.boxPack || 0
 });
 
 
@@ -1932,6 +1933,8 @@ export const updateProduct = async (req, res) => {
     }
 
     if (division !== undefined) product.division = division.trim();
+    if (req.body.boxPack !== undefined) product.boxPack = Number(req.body.boxPack);
+
 
     await product.save();
     res.json({ success: true, product });
@@ -1941,11 +1944,22 @@ export const updateProduct = async (req, res) => {
   }
 };
 
+export const getDivisions = async (req, res) => {
+  try {
+    const divisions = await ProductMaster.distinct("division");
+    res.json(divisions.filter(Boolean).sort());
+  } catch (err) {
+    console.error("GET DIVISIONS FAILED:", err);
+    res.status(500).json({ error: "Failed to fetch divisions" });
+  }
+};
+
 export const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
 
     const deleted = await ProductMaster.findByIdAndDelete(id);
+
     if (!deleted) {
       return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
     }

@@ -62,7 +62,7 @@ const productMasterSchema = new mongoose.Schema({
 });
 
 // Pre-save hook to auto-populate fields
-productMasterSchema.pre("save", function (next) {
+productMasterSchema.pre("save", async function () {
   if (this.isModified("productName")) {
     const { name, strength, variant } = splitProduct(this.productName);
 
@@ -73,7 +73,6 @@ productMasterSchema.pre("save", function (next) {
       .filter(Boolean)
       .join(" ");
   }
-  next();
 });
 
 // Indexes for better query performance
