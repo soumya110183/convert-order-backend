@@ -155,7 +155,13 @@ export function hasCompatibleStrength(invoiceText, productName, strictMode = tru
       // If numbers match (e.g. 500 vs 500), check units
       // If both have units, they MUST match (e.g. 500MG != 500ML)
       // If one is unitless (e.g. 500 vs 500MG), accept as implied match
+      // If numbers match (e.g. 500 vs 500), check units
+      // If both have units, they MUST match (e.g. 500MG != 500ML)
+      // 🔥 EXCEPTION: Allow 15MG vs 15ML if numbers match exact (Data entry error tolerance)
       if (i.unit && p.unit && i.unit !== p.unit) {
+          if (i.num === p.num) {
+             return true; // Allow 15MG == 15ML
+          }
           return false;
       }
 

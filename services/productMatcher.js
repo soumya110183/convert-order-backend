@@ -170,18 +170,19 @@ function cleanInvoiceProduct(text) {
 
 
 function hasCompatibleVariant(invoiceText, productName) {
-  // 🔥 EXPANDED: Added MT, H, AT, TRIO, A, AM, D, M, LS, TH, DC and other common pharma variants
+  // 🔥 EXPANDED: Added MT, H, AT, TRIO, A, AM, D, M, LS, TH, DC and forms (DROPS, SYP, etc.)
   const extract = (text) =>
-    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB|MT|H|AT|TRIO|A|AM|D|M|LS|TH|BETA|DC)\b/g) || [];
+    text.toUpperCase().match(/\b(OD|SR|MR|XL|CR|FORTE|PLUS|GOLD|CV|LBX|LB|MT|H|AT|TRIO|A|AM|D|M|LS|TH|BETA|DC|DROPS|DROP|SYP|SYRUP|SUSP|SUSPENSION|GEL|CREAM|INJ|INJECTION)\b/g) || [];
 
   const inv = extract(invoiceText);
   const prod = extract(productName);
 
   // 🔥 STRICT variants must match - these are critical differentiators
-  // MT = Metoprolol combo, H = HCTZ combo, AT = Atorvastatin combo, TRIO = Triple combo
-  // BETA = Beta blocker combo, M = Metformin combo, DC = Diclofenac/combo
-  // 🔥 UPDATED: Added PLUS, FORTE, GOLD, CV, LBX to strict list to prevent false positives
-  const strict = ['OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS', 'DC', 'PLUS', 'FORTE', 'GOLD', 'CV', 'LBX', 'M'];
+  // Added FORMS to strict list to prevent Tablet matching Drops
+  const strict = [
+      'OD', 'SR', 'MR', 'XL', 'CR', 'MT', 'H', 'AT', 'TRIO', 'BETA', 'A', 'AM', 'TH', 'LS', 'DC', 'PLUS', 'FORTE', 'GOLD', 'CV', 'LBX', 'M',
+      'DROPS', 'DROP', 'SYP', 'SYRUP', 'SUSP', 'SUSPENSION', 'GEL', 'CREAM', 'INJ', 'INJECTION'
+  ];
 
   const invStrict = inv.filter(v => strict.includes(v));
   const prodStrict = prod.filter(v => strict.includes(v));
