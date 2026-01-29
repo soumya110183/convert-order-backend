@@ -520,14 +520,30 @@ if (hasSheets) {
 
       const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
 
-      const schemeResult = applyScheme({
-  productCode,               // ✅ correct
-  orderQty: qty,
-  itemDesc: row.ITEMDESC,
-  division: row.DVN,
-  customerCode: customer.customerCode, // ✅ Added customer context
-  schemes
-});
+      let schemeResult;
+      
+      // 🔥 TRUST FRONTEND (Source of Truth)
+      // If frontend sends calculate freeQty, use it directly to ensure
+      // "Stored Value" logic (prevent double calculation/scaling issues)
+      if (typeof row.freeQty === 'number') {
+           schemeResult = {
+               schemeApplied: row.freeQty > 0,
+               freeQty: row.freeQty,
+               schemePercent: row.schemePercent || 0,
+               appliedSlab: { freeQty: row.freeQty }, // Dummy slab for reference
+               calculation: "Manual/Frontend Stored Value"
+           };
+      } else {
+           // Fallback for API/Bulk uploads without frontend context
+           schemeResult = applyScheme({
+              productCode,               // ✅ correct
+              orderQty: qty,
+              itemDesc: row.ITEMDESC,
+              division: row.DVN,
+              customerCode: customer.customerCode, // ✅ Added customer context
+              schemes
+            });
+      }
 
       // 💡 Calculate Upsell Opportunity
       const upsell = findUpsellOpportunity({
@@ -552,14 +568,20 @@ if (hasSheets) {
         totalFreeQty += schemeResult.freeQty || 0;
       }
 
+      // 🔥 Calculate Final Quantity (Order + Free)
+      const finalQty = qty + (schemeResult.freeQty || 0);
+      
+      // 🔥 Recalculate Pack based on Final Quantity
+      const finalPack = boxPack > 0 ? Math.ceil(finalQty / boxPack) : 0;
+
       output.push({
   CODE: customer.customerCode,
   "CUSTOMER NAME": customer.customerName,
   SAPCODE: productCode,       // ✅ correct
   ITEMDESC: (req.body.dataRows ? row.ITEMDESC : (row.manualProduct?.name || row.matchedProduct?.name || row.ITEMDESC || "")).trim(),
-  ORDERQTY: qty,
+  ORDERQTY: finalQty,         // ✅ Now showing Total Quantity (Billed + Free)
   "BOX PACK": boxPack,
-  PACK: pack,
+  PACK: finalPack,            // ✅ Pack calculated on Total Quantity
   DVN: row.DVN || "",
   _hasScheme: schemeResult.schemeApplied || false,
 
