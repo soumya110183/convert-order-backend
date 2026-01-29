@@ -2106,12 +2106,45 @@ export const updateScheme = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const scheme = await SchemeMaster.findById(id);
+    // Handle composite ID (schemeId-slabIndex)
+    let realId = id;
+    let slabIndex = -1;
+
+    if (id.includes("-")) {
+        const parts = id.split("-");
+        // Check if the last part is a number (index) and the first part is a valid ObjectId (hex)
+        const possibleIndex = parts[parts.length - 1];
+        const possibleId = parts.slice(0, -1).join("-");
+        
+        if (/^\d+$/.test(possibleIndex) && /^[0-9a-fA-F]{24}$/.test(possibleId)) {
+            realId = possibleId;
+            slabIndex = parseInt(possibleIndex, 10);
+        }
+    }
+
+    const scheme = await SchemeMaster.findById(realId);
     if (!scheme) {
       return res.status(404).json({ error: "SCHEME_NOT_FOUND" });
     }
 
-    Object.assign(scheme, req.body);
+    // If it's a specific slab update
+    if (slabIndex !== -1 && scheme.slabs[slabIndex]) {
+        // Update the specific slab data
+        if (req.body.minQty !== undefined) scheme.slabs[slabIndex].minQty = Number(req.body.minQty);
+        if (req.body.freeQty !== undefined) scheme.slabs[slabIndex].freeQty = Number(req.body.freeQty);
+        if (req.body.schemePercent !== undefined) scheme.slabs[slabIndex].schemePercent = Number(req.body.schemePercent);
+        
+        // GLOBAL FIELDS: Allow updating top-level fields from ANY row
+        if (req.body.productName !== undefined) scheme.productName = req.body.productName.trim();
+        if (req.body.productCode !== undefined) scheme.productCode = req.body.productCode.trim();
+        if (req.body.division !== undefined) scheme.division = req.body.division.trim();
+        if (req.body.isActive !== undefined) scheme.isActive = req.body.isActive;
+
+    } else {
+        // Standard full document update
+        Object.assign(scheme, req.body);
+    }
+
     await scheme.save();
 
     res.json({ success: true, scheme });
