@@ -164,12 +164,32 @@ function looksLikeProduct(text, strict = true) {
   const tokens = text.trim().split(/\s+/);
   
   // Normal format: serial code product ...
-  if (tokens.length >= 5 && /^\d{1,2}$/.test(tokens[0]) && /^\d{3,6}$/.test(tokens[1])) {
+  // Existing numeric check
+  if (tokens.length >= 4 && /^\d{1,2}$/.test(tokens[0]) && /^\d{3,6}$/.test(tokens[1])) {
     const serialNum = Number(tokens[0]);
     if (serialNum >= 1 && serialNum <= 99 && /\d+\.\d{2}/.test(text) && /[A-Z]{3,}/i.test(text)) {
       debug(`  ✅ [TABLE] Row ${serialNum}, Code ${tokens[1]}`);
       return true;
     }
+  }
+
+  // 🔥 NEW: Qty-Code-Product Pattern (Common in this user's PDF)
+  // e.g. "30 P1 PREGATOR...", "10 L1 LINAPRIDE..."
+  // Token 0: Number (Qty)
+  // Token 1: Short Code (A-Z + Digit, e.g. P1, D4, L1, or just 2-3 chars)
+  // Token 2: Product Name start (3+ chars)
+  if (tokens.length >= 3) {
+      const t0 = tokens[0];
+      const t1 = tokens[1];
+      const t2 = tokens[2];
+      
+      const isQty = /^\d{1,5}$/.test(t0); // 1-99999
+      const isShortCode = /^[A-Z]?[A-Z]?[0-9]{1,4}$/i.test(t1) || /^[A-Z][0-9][A-Z]$/i.test(t1); // P1, S1, D4, 100, etc.
+      const isName = /[A-Z]{3,}/i.test(t2);
+      
+      if (isQty && isShortCode && isName) {
+           return true; 
+      }
   }
 
   // 🔥 REVERSED TABLE ROW: qty price serial code product
@@ -187,7 +207,8 @@ function looksLikeProduct(text, strict = true) {
   // ✅ MUST contain medicine identity
   const hasForm = /\b(TAB|TABLET|CAP|CAPSULE|CAPS|INJ|SYRUP|SYP|DROPS|DRPS|CREAM|GEL|OINT|VIAL|AMP)\b/i.test(upper);
   const hasStrength = /\b\d+\s*(MG|ML|MCG|IU|GM)\b/i.test(upper);
-  const hasPack = /\d+['"`]S\b/i.test(upper);
+  // 🔥 FIX: Allow "10S" without separator (e.g. DOLO 10S)
+  const hasPack = /\d+['"`]?S\b/i.test(upper);
 
   if (hasForm || hasStrength || hasPack) return true;
 
@@ -505,6 +526,21 @@ function extractQuantityFromMergedLine(text) {
   }
 
   // Search backwards from amount to find quantity
+  
+  // 🔥 PRIORITY CHECK: Scan existing tokens for strict Qty-Code-Product pattern
+  // This takes precedence over proximity to amount (fixes "21 S1 SITAPRIDE 50" -> picking 21, not 50)
+  for (let i = 0; i < amountIdx; i++) {
+     const t = tokens[i];
+     const next = tokens[i+1];
+     if (/^\d+$/.test(t) && Number(t) < 99999) {
+         // Check for Code pattern (S1, P1, D4) immediately following
+         if (next && /^[A-Z][0-9]$|^[A-Z][A-Z]?[0-9]$/i.test(next)) {
+             console.log(`  [MERGED_QTY] PRIORITY: Found ${t} followed by code ${next}`);
+             return Number(t);
+         }
+     }
+  }
+
   for (let i = amountIdx - 1; i >= 0; i--) {
     const t = tokens[i];
     if (!/^\d+$/.test(t)) continue;
@@ -533,6 +569,8 @@ function extractQuantityFromMergedLine(text) {
       continue;
     }
     
+    // (Qty-Code check removed - handled by PRIORITY CHECK above)
+
     // 🔥 NEW: Skip single-digit serial numbers in early positions  
     if (i <= 5 && val < 10) {
       console.log(`  [BLOCKED] Single-digit serial: ${val} at position ${i}`);
@@ -692,16 +730,26 @@ export function extractProductName(text, qty) {
     }
   }
 
-  // 🔥 STEP 4: Find form word and keep only up to it
-  // Form words: TAB, TABLET, CAP, CAPSULE, INJ, SYP, DROPS, CREAM, GEL
-  const formMatch = t.match(/\b(TAB|TABLET|CAP|CAPSULE|INJ|INJECTION|SYP|SYRUP|DROPS|CREAM|GEL|OINT)\b/i);
+  // 🔥 STEP 4: Find form word and keep only up to it, UNLESS strength follows
+  // Form words expanded: added SUS, SUSP, POWDER, SACHET, VI, VIAL, AMP
+  const formMatch = t.match(/\b(TAB|TABLET|CAP|CAPSULE|INJ|INJECTION|SYP|SYRUP|DROPS|CREAM|GEL|OINT|SUS|SUSP|POWDER|SACHET|VI|VIAL|AMP)\b/i);
   
   if (formMatch) {
     const formWord = formMatch[0];
     const formIndex = formMatch.index;
     
-    // Keep everything up to and including the form word
-    t = t.substring(0, formIndex + formWord.length);
+    // Check if there is a strength immediately following the form word
+    // e.g. "DOLO TAB 650 MG" -> keep "650 MG"
+    const remaining = t.substring(formIndex + formWord.length);
+    const strengthMatch = remaining.match(/^\s*\.?\d+(?:\.\d+)?\s*(MG|ML|GM|MCG|IU|%|G)\b/i);
+    
+    if (strengthMatch) {
+       // Keep form word + strength
+       t = t.substring(0, formIndex + formWord.length + strengthMatch[0].length);
+    } else {
+       // Keep everything up to and including the form word
+       t = t.substring(0, formIndex + formWord.length);
+    }
   } else {
     // No form word - extract from table row
     // Pattern: "NITROFIX 30SR 10,S 10 1957.50 50"
@@ -963,7 +1011,7 @@ async function parsePDF(file) {
   */
 
   const textLines = rows.map(r => r.rawText || "");
-  const customerName = detectCustomerFromInvoice(textLines);
+  const customerName = detectCustomerFromInvoice(textLines, file.originalname);
 
   const dataRows = [];
   const failed = [];
@@ -971,13 +1019,17 @@ async function parsePDF(file) {
 
   // 🔥 FIRST PASS: Strict detection
   for (let i = 0; i < mergedLines.length; i++) {
-    const text = mergedLines[i]?.trim();
+    let text = mergedLines[i]?.trim();
     if (!text) continue;
 
     if (isHardJunk(text)) {
       debug(`⛔ Row ${i + 1}: Junk "${text}"`);
       continue;
     }
+
+    // 🔥 FIX: Strip common PDF prefixes that interfere with extraction
+    // e.g. "MICR 30 P1..." -> "30 P1..."
+    text = text.replace(/^MICR\s+/i, "");
 
     if (!looksLikeProduct(text, true)) {
       console.log(`  ❌ Row ${i + 1}: Skipped (No form/keyword) "${text.substring(0, 30)}..."`);
@@ -1003,7 +1055,9 @@ async function parsePDF(file) {
     }
 
     // ✅ DO NOT DROP PRODUCT IF QTY IS MISSING
-    const itemDesc = extractProductName(text, qty);
+    const rawDesc = extractProductName(text, qty);
+    // 🔥 CLEANING: ensure junk is removed
+    const itemDesc = cleanExtractedProductName(rawDesc);
 
     if (!itemDesc || itemDesc.length < 3) {
       console.log(`  ❌ Row ${i + 1} FAILED: Name too short/empty: "${itemDesc}"`);
@@ -1036,7 +1090,7 @@ async function parsePDF(file) {
     failed.length = 0;
 
     for (let i = 0; i < mergedLines.length; i++) {
-      const text = mergedLines[i]?.trim();
+      let text = mergedLines[i]?.trim();
       if (!text) continue;
 
       if (isHardJunk(text)) continue;
@@ -1055,7 +1109,9 @@ async function parsePDF(file) {
         }
       }
 
-      const itemDesc = extractProductName(text, qty);
+      const rawDesc = extractProductName(text, qty);
+      // 🔥 APPLY CLEANING LOGIC (Fixing A4, 30049079 retention)
+      const itemDesc = cleanExtractedProductName(rawDesc);
 
       if (!itemDesc || itemDesc.length < 5) {
         failed.push({ row: i + 1, text, reason: "Invalid product name" });
@@ -1255,6 +1311,10 @@ function cleanExtractedProductName(raw = "") {
   // Step 1: Remove company prefix (MICRO1, MICRO2, etc.)
   cleaned = cleaned.replace(/^MICRO\d+\s+/g, "");
   
+  // Step 1b: Stripping leading numbers (Qty) to ensure Code regex at start works
+  // e.g. "300 D4 DIBIZIDE..." -> "D4 DIBIZIDE..."
+  cleaned = cleaned.replace(/^\d+\s+/, "");
+
   // Step 2: Remove division names
   // Pattern: "MICRO [DIVISION] RAJ DIST/DISTRIBUT"
   cleaned = cleaned.replace(
@@ -1262,8 +1322,21 @@ function cleanExtractedProductName(raw = "") {
     ""
   );
   
+  // 🔥 NEW: Remove Short Alphanumeric Codes at Start (e.g. "P1 ", "D4 ", "L1 ")
+  // Also covers "300 D4" if 300 wasn't stripped
+  // 1. Strip leading digits again just in case (e.g. Qty leftovers)
+  cleaned = cleaned.replace(/^\d+\s+/, "");
+  // 2. Strip D4, P1, M3, A4 (Letter+Digit)
+  cleaned = cleaned.replace(/^[A-Z]\d+\b\s*/i, ""); 
+  // 3. Strip Code-like starts (Letter+Letter+Digit e.g. CC1)
+  cleaned = cleaned.replace(/^[A-Z]{2}\d+\b\s*/i, "");
+  // 4. Strip Digit+Letter+Digit
+  cleaned = cleaned.replace(/^[A-Z]\d+[A-Z]\b\s*/i, "");
+
   // Step 3: Remove standalone product codes (PROD#### or ####)
-  cleaned = cleaned.replace(/^(PROD)?\d{4,6}\s+/g, "");
+  // And long numeric codes at the end (e.g. 30049079) -- MOVED TO END
+  cleaned = cleaned.replace(/^(PROD)?\d{4,6,}\s+/g, "");
+  // cleaned = cleaned.replace(/\s+\d{6,}$/g, ""); // Moved to end of function
   
   // Step 4: Remove RAJ/DIST/DISTRIBUT remnants
   cleaned = cleaned.replace(/\b(RAJ|DIST|DISTRIBUT|DISTRIBUTOR)\b/gi, " ");
@@ -1285,15 +1358,18 @@ function cleanExtractedProductName(raw = "") {
   cleaned = cleaned.replace(/\bSYP\./gi, "SYRUP");
 
   // Step 6b: Remove standard pack patterns (15S, 1X10)
-  // 🔥 FIX: Preserve the number (10) in '10 S' because it might be the strength (OLAN 10 S)
-  // The trailing number logic (Step 7) will decide if it's a pack or strength later
-  cleaned = cleaned.replace(/\b(\d+)\s*['"`]?\s*S\b/gi, "$1");
+  // 🔥 UPDATED: User explicitly asked to REMOVE "other values" including pack size like "10S" in DIBIZIDE M 10S
+  // Previously we kept "10" thinking it might be strength, but user says "10S" is unwanted pack info.
+  // We will remove it if it has 'S' suffix.
+  cleaned = cleaned.replace(/\b\d+\s*['"`]?\s*S\b/gi, ""); // Remove "10S", "10 S", "10'S"
   cleaned = cleaned.replace(/\b\d+X\d+[A-Z]?\b/gi, "");
 
   // Step 6c: Remove units (MG, ML, etc) but keep number (Integer OR Decimal)
-  cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1");
-  // Step 6d: Remove standalone units (e.g. "MOXILONG MG")
-  cleaned = cleaned.replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "");
+  // 🔥 UPDATED: User wants to SEE units. Commenting out removal.
+  // cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1");
+  
+  // Step 6d: Remove standalone units (e.g. "MOXILONG MG") - DISABLED
+  // cleaned = cleaned.replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "");
 
   // Step 6e: Remove Form words (SELECTIVE)
   // 1. Remove TABS/CAPS (User removed these from DB)
@@ -1304,6 +1380,13 @@ function cleanExtractedProductName(raw = "") {
 
   // Step 7: Remove trailing pack details
   // Case A: REMOVED (Was stripping valid decimals like 2.5)
+  // Case C: Remove purely integer trailing numbers > 1000 (likely price/code) or specific patterns?
+  // User wants "no other values".
+  // Remove 3+ digit numbers at end (likely codes like 300) IF they are not part of name?
+  // Be careful: "DIBIZIDE M 300" -> 300 might be strength?
+  // User complained about "30049079". This is covered by code removal above.
+  
+
   // cleaned = cleaned.replace(/\.\s*\d+[\.\s]*$/g, "");
   
   // Case B: Dot followed by digits, NOT preceded by digit (Safe)
@@ -1340,11 +1423,19 @@ cleaned = cleaned.replace(/(\d+(?:\.\d+)?)\s+(\d+)$/, (match, p1, p2) => {
 });
 
 
-  // Case E: Deduplicate repeated strength (e.g. "50/500 50/500" -> "50/500")
-  cleaned = cleaned.replace(/(\b\d+(?:[\.\/]\d+)?(?:MG|ML|MCG|GM|G|IU|KG)?)\s+\1\b/gi, "$1");
-  
   // Step 8: Normalize spacing
   cleaned = cleaned.replace(/\s+/g, " ").trim();
+  
+  // 🔥 MOVED HERE: Remove long numeric codes (HSN/Barcodes) - ANYWHERE in string
+  // e.g. 30049079
+  cleaned = cleaned.replace(/\b\d{5,}\b/g, "");
+
+  // Final trim
+  cleaned = cleaned.trim();
+  
+  if (raw.includes("ARBITEL")) {
+     console.log(`[Cleaner DEBUG] In: "${raw}" -> Out: "${cleaned}"`);
+  }
   
   return cleaned;
 }
@@ -1379,8 +1470,10 @@ function extractFromExcelColumns(rows, columnMap) {
       continue;
     }
     
-    // Parse quantity
-    const qtyNum = parseInt(String(qty || "").replace(/[^0-9]/g, ""));
+    // Parse quantity (Support Decimals)
+    // Remove everything except digits and dots
+    const cleanQty = String(qty || "").replace(/[^0-9.]/g, "");
+    const qtyNum = parseFloat(cleanQty);
     
     // Validate
     if (!itemName || !qtyNum || qtyNum <= 0) {
@@ -1708,7 +1801,8 @@ function parseExcel(file) {
     const customerName = detectCustomerFromInvoice(
       rowsArray
         .slice(0, 20)
-        .map(r => (Array.isArray(r) ? r.join(" ") : String(r)))
+        .map(r => (Array.isArray(r) ? r.join(" ") : String(r))),
+      file.originalname
     );
 
     return {
@@ -1734,7 +1828,7 @@ function parseExcel(file) {
     .map(l => l.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  const customerName = detectCustomerFromInvoice(textLines);
+  const customerName = detectCustomerFromInvoice(textLines, file.originalname);
 
   const dataRows = [];
   const failed = [];
@@ -1858,7 +1952,7 @@ function parseText(file) {
   
   debug(`\n📝 Text: ${lines.length} lines`);
   
-  const customerName = detectCustomerFromInvoice(lines);
+  const customerName = detectCustomerFromInvoice(lines, file.originalname || "text.txt");
   const dataRows = [];
   const failed = [];
   

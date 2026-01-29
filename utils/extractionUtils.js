@@ -117,7 +117,7 @@ export function normalizeStrength(strength = "") {
  * Check if strengths are compatible
  * CRITICAL: Both must match if both present
  */
-export function hasCompatibleStrength(invoiceText, productName) {
+export function hasCompatibleStrength(invoiceText, productName, strictMode = true) {
   const inv = normalizeStrength(extractStrength(invoiceText));
   const prod = normalizeStrength(extractStrength(productName));
 
@@ -162,7 +162,12 @@ export function hasCompatibleStrength(invoiceText, productName) {
       return true;
   }
 
-  // Only one has strength → REJECT (strict mode for safety)
+  // Only one has strength → Check strict mode
+  if (!strictMode) {
+      return true; // Allow if not strict
+  }
+
+  // REJECT (strict mode for safety)
   return false;
 }
 

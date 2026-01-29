@@ -536,7 +536,7 @@ if (
         // 🔥 LENIENT: If only one candidate exists, auto-select it ONLY if compatible
         if (candidates.length === 1) {
           const cand = candidates[0];
-          if (hasCompatibleStrength(rawInvoice, cand.productName) &&
+          if (hasCompatibleStrength(rawInvoice, cand.productName, false) &&
               hasCompatibleVariant(rawInvoice, cand.productName)) {
               console.log(`  ✅ AUTO-SELECTED (single candidate): ${cand.productName}`);
               return {
