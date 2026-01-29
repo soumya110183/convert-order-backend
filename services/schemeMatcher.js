@@ -144,25 +144,8 @@ export function applyScheme({ productCode, orderQty, itemDesc, division, custome
 
     
     // ---------------------------------------------------------
-    // SPECIAL LOGIC: DOLO 650 (FTIND0352) -> 25% Proportional
+    // STANDARD LOGIC (DB Driven)
     // ---------------------------------------------------------
-    const isDolo650 = (productCode === 'FTIND0352') || (scheme.productName && scheme.productName.includes("DOLO- 650"));
-  
-    if (isDolo650 && orderQty >= 4) {
-        const ratio = 0.25; 
-        const freeQty = Math.round(orderQty * ratio);
-        return {
-              schemeApplied: true,
-              freeQty: freeQty,
-              schemePercent: 25,
-              appliedSlab: { minQty: 4, freeQty: 1, schemePercent: 25 },
-              multiplier: 1,
-              baseRatio: { minQty: 4, freeQty: 1 },
-              calculation: `DOLO 650 Special: ${orderQty} * 25% = ${freeQty} (Rounded)`,
-              availableSlabs: scheme.slabs,
-              schemeName: scheme.schemeName,
-        };
-    }
 
     // 1. Generate Universe of Slabs (Explicit + Virtual)
     const allSlabs = SchemeEngine.generateVirtualSlabs(scheme.slabs || [], orderQty);
