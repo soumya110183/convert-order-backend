@@ -1932,8 +1932,25 @@ export const updateProduct = async (req, res) => {
       return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
     }
 
+    if (productName && productName.trim()) {
+        const trimmedName = productName.trim();
+        product.productName = trimmedName;
+
+        // Recalculate derived fields to keep search consistent
+        const { name, strength, variant } = splitProduct(trimmedName);
+        product.baseName = name;
+        product.dosage = strength || null;
+        product.variant = variant || null;
+        
+        // Update cleaned search string
+        product.cleanedProductName = [name, strength, variant]
+            .filter(Boolean)
+            .join(" ");
+    }
+
     if (division !== undefined) product.division = division.trim();
     if (req.body.boxPack !== undefined) product.boxPack = Number(req.body.boxPack);
+    if (req.body.pack !== undefined) product.pack = Number(req.body.pack);
 
 
     await product.save();
