@@ -859,7 +859,9 @@ export function extractProductName(text, qty) {
   // 🔥 FIX 2: Handle decimal units (e.g. "2.5 MG")
   // Previously only matched integers (\d+), leaving ".5" behind
   t = t
-    .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|INJ|INJECTION|SYP|SYRUP|SUSP|SUSPENSION|OINTMENT|GEL|CREAM|DROPS?|SOL|SOLUTION|IV|INFUSION|AMP|NO|NOS|PACK|KIT)\b/gi, "")
+    // Remove ONLY generic count words, NOT dosage forms
+.replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|NO|NOS|PACK|KIT)\b/gi, "")
+
     .replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1") // Keep number (int or decimal)
     .replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // Remove standalone units
     .replace(/\b(\d+)\s*['`"]?S\b/gi, "")

@@ -578,7 +578,7 @@ if (hasSheets) {
   CODE: customer.customerCode,
   "CUSTOMER NAME": customer.customerName,
   SAPCODE: productCode,       // ✅ correct
-  ITEMDESC: (row.matchedProduct?.productName || row.manualProduct?.name || row.ITEMDESC || "").trim(),
+  ITEMDESC: (row.ITEMDESC || row.matchedProduct?.productName || row.manualProduct?.name || "").trim(),
   ORDERQTY: finalQty,         // ✅ Now showing Total Quantity (Billed + Free)
   "BOX PACK": boxPack,
   PACK: finalPack,            // ✅ Pack calculated on Total Quantity
