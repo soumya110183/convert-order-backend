@@ -2026,11 +2026,21 @@ const product = await ProductMaster.create({
 export const updateProduct = async (req, res) => {
   try {
     const { id } = req.params;
-    const { productName, division } = req.body;
+    const { productName, division, productCode } = req.body;
 
     const product = await ProductMaster.findById(id);
     if (!product) {
       return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
+    }
+
+    // ✅ Allow Product Code Update (with uniqueness check)
+    if (productCode && productCode.trim() !== product.productCode) {
+        const newCode = productCode.trim().toUpperCase();
+        const existing = await ProductMaster.findOne({ productCode: newCode });
+        if (existing) {
+             return res.status(400).json({ error: "PRODUCT_CODE_ALREADY_EXISTS" });
+        }
+        product.productCode = newCode;
     }
 
     if (productName && productName.trim()) {
