@@ -1535,20 +1535,85 @@ function extractPackSize(desc) {
 ===================================================== */
 
 
+// Helper to style headers and set column widths (Reused across all exports)
+const styleSheet = (sheet, colWidths = [], boldCols = []) => {
+  // Set Column Widths
+  if (colWidths.length > 0) {
+    sheet["!cols"] = colWidths.map(w => ({ wch: w }));
+  }
+
+  // Apply Styles to All Cells
+  const range = XLSX.utils.decode_range(sheet["!ref"]);
+  for (let R = range.s.r; R <= range.e.r; ++R) {
+    for (let C = range.s.c; C <= range.e.c; ++C) {
+      const address = XLSX.utils.encode_cell({ r: R, c: C });
+      if (!sheet[address]) continue;
+
+      // Base Style (Borders)
+      const style = {
+        border: {
+          top: { style: "thin" },
+          bottom: { style: "thin" },
+          left: { style: "thin" },
+          right: { style: "thin" }
+        },
+        font: { sz: 12 }, // Increased data font size
+        alignment: { vertical: "center" }
+      };
+
+      // Header Styling (Row 0)
+      if (R === 0) {
+          style.font = { bold: true, color: { rgb: "FFFFFF" }, sz: 13 }; // Increased header font size
+          style.fill = { fgColor: { rgb: "C00000" } }; // Red
+          style.alignment = { horizontal: "center", vertical: "center" };
+      } 
+      // Data Styling
+      else {
+          if (boldCols.includes(C)) {
+              style.font.bold = true;
+          }
+      }
+
+      sheet[address].s = style;
+    }
+  }
+  return sheet;
+};
+
 export const exportCustomers = async (req, res) => {
     try {
         const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();
         const wb = XLSX.utils.book_new();
+        
         const customerData = customers.map(c => ({
             "Code": c.customerCode || "",
             "Customer Type": c.customerType || "",
             "Customer Name": c.customerName || "",
             "Address 1": c.address1 || "",
+            "Address 2": c.address2 || "",
+            "Address 3": c.address3 || "",
             "City": c.city || "",
+            "Pin Code": c.pinCode || "",
             "State": c.state || "",
-            "GST": c.gstNo || ""
-        })); // Simplified for now, or match full export
+            "Contact Person": c.contactPerson || "",
+            "Phone No1": c.phoneNo1 || "",
+            "Phone No2": c.phoneNo2 || "",
+            "Mobile No": c.mobileNo || "",
+            "Drug Lic No": c.drugLicNo || "",
+            "Drug Lic From Dt": c.drugLicFromDt || "",
+            "Drug Lic To Dt": c.drugLicToDt || "",
+            "Drug Lic No1": c.drugLicNo1 || "",
+            "Drug Lic From Dt1": c.drugLicFromDt1 || "",
+            "Drug Lic To Dt1": c.drugLicToDt1 || "",
+            "Gst No": c.gstNo || "",
+            "E Mail": c.email || ""
+        }));
+
         const sheet = XLSX.utils.json_to_sheet(customerData);
+        
+        // Apply Styling & Widths (Same as Master Export)
+        styleSheet(sheet, [20, 20, 50, 40, 40, 40, 20, 15, 20, 25, 20, 20, 20, 25, 20, 20, 25, 20, 20, 25, 30]);
+
         XLSX.utils.book_append_sheet(wb, sheet, "Customers");
         const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
         res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -1564,11 +1629,17 @@ export const exportProducts = async (req, res) => {
         const products = await ProductMaster.find().sort({ productName: 1 }).lean();
         const wb = XLSX.utils.book_new();
         const data = products.map(p => ({
-            "Sap Code": p.productCode,
+            "SAP Code": p.productCode,
             "Item Desc": p.productName,
-            "Dvn": p.division || ""
+            "Division": p.division || "",
+            "Box Pack": p.boxPack || 0
         }));
+        
         const sheet = XLSX.utils.json_to_sheet(data);
+        
+        // Apply Styling: Bold 'Item Desc' (Index 1)
+        styleSheet(sheet, [20, 60, 25, 15], [1]);
+
         XLSX.utils.book_append_sheet(wb, sheet, "Products");
         const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
         res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -1585,12 +1656,18 @@ export const exportSchemes = async (req, res) => {
         const wb = XLSX.utils.book_new();
         const data = schemes.flatMap(s => (s.slabs || []).map(slab => ({
             "Division": s.division,
+            "Product Code": s.productCode,
             "Product": s.productName,
             "Min Qty": slab.minQty,
             "Free Qty": slab.freeQty,
-            "Scheme %": slab.schemePercent * 100
+            "Scheme %": (slab.schemePercent * 100).toFixed(2) + "%"
         })));
+        
         const sheet = XLSX.utils.json_to_sheet(data);
+
+        // Apply Styling: Bold 'Product' (Index 2)
+        styleSheet(sheet, [25, 20, 50, 15, 15, 15], [2]);
+
         XLSX.utils.book_append_sheet(wb, sheet, "Schemes");
         const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
         res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
@@ -1610,50 +1687,8 @@ export const exportMasterDatabase = async (req, res) => {
     // Create workbook
     const wb = XLSX.utils.book_new();
 
-    // Helper to style headers and set column widths
-    const styleSheet = (sheet, colWidths = [], boldCols = []) => {
-      // Set Column Widths
-      if (colWidths.length > 0) {
-        sheet["!cols"] = colWidths.map(w => ({ wch: w }));
-      }
-
-      // Apply Styles to All Cells
-      const range = XLSX.utils.decode_range(sheet["!ref"]);
-      for (let R = range.s.r; R <= range.e.r; ++R) {
-        for (let C = range.s.c; C <= range.e.c; ++C) {
-          const address = XLSX.utils.encode_cell({ r: R, c: C });
-          if (!sheet[address]) continue;
-
-          // Base Style (Borders)
-          const style = {
-            border: {
-              top: { style: "thin" },
-              bottom: { style: "thin" },
-              left: { style: "thin" },
-              right: { style: "thin" }
-            },
-            font: { sz: 12 }, // Increased data font size
-            alignment: { vertical: "center" }
-          };
-
-          // Header Styling (Row 0)
-          if (R === 0) {
-             style.font = { bold: true, color: { rgb: "FFFFFF" }, sz: 13 }; // Increased header font size
-             style.fill = { fgColor: { rgb: "C00000" } }; // Red
-             style.alignment = { horizontal: "center", vertical: "center" };
-          } 
-          // Data Styling
-          else {
-             if (boldCols.includes(C)) {
-                 style.font.bold = true;
-             }
-          }
-
-          sheet[address].s = style;
-        }
-      }
-      return sheet;
-    };
+    // Helper `styleSheet` is now defined globally above, so we can use it directly.
+    // Removed local definition.
 
     // 1. CUSTOMER SHEET
     const customerData = customers.map(c => ({
