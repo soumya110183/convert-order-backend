@@ -2033,7 +2033,12 @@ export const updateProduct = async (req, res) => {
       return res.status(404).json({ error: "PRODUCT_NOT_FOUND" });
     }
 
+
     // ✅ Allow Product Code Update (with uniqueness check)
+    // CAPTURE ORIGINAL VALUES FOR SYNC
+    const originalProductCode = product.productCode;
+    const originalDivision = product.division;
+
     if (productCode && productCode.trim() !== product.productCode) {
         const newCode = productCode.trim().toUpperCase();
         const existing = await ProductMaster.findOne({ productCode: newCode });
@@ -2063,8 +2068,32 @@ export const updateProduct = async (req, res) => {
     if (req.body.boxPack !== undefined) product.boxPack = Number(req.body.boxPack);
     if (req.body.pack !== undefined) product.pack = Number(req.body.pack);
 
-
     await product.save();
+
+    // ✅ SYNC CHANGES TO SCHEME MASTER
+    // If Code, Name, or Division changed, we must update the linked schemes
+    if (
+        product.productCode !== originalProductCode ||
+        product.division !== originalDivision ||
+        (productName && productName.trim()) // Name check is simpler here
+    ) {
+        console.log(`🔄 Syncing Product Update to Schemes: ${originalProductCode} -> ${product.productCode}`);
+        
+        const schemeUpdateResult = await SchemeMaster.updateMany(
+            { 
+                productCode: originalProductCode
+            },
+            {
+                $set: {
+                    productCode: product.productCode,
+                    productName: product.productName,
+                    division: product.division
+                }
+            }
+        );
+        console.log(`   Detailed Sync: Matched ${schemeUpdateResult.matchedCount}, Modified ${schemeUpdateResult.modifiedCount}`);
+    }
+
     res.json({ success: true, product });
   } catch (err) {
     console.error("UPDATE PRODUCT FAILED:", err);
