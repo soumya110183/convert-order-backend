@@ -238,7 +238,7 @@ export const extractOrderFields = async (req, res, next) => {
       const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
 
       validRows.push({
-        ITEMDESC: cleanedDesc,
+        ITEMDESC: (match.productName || cleanedDesc).trim(),
         ORDERQTY: qty,
         matchedProduct: {
           _id: match._id,
@@ -578,7 +578,7 @@ if (hasSheets) {
   CODE: customer.customerCode,
   "CUSTOMER NAME": customer.customerName,
   SAPCODE: productCode,       // ✅ correct
-  ITEMDESC: (row.ITEMDESC || row.matchedProduct?.productName || row.manualProduct?.name || "").trim(),
+  ITEMDESC: (row.matchedProduct?.productName || row.ITEMDESC || row.manualProduct?.name || "").trim(),
   ORDERQTY: finalQty,         // ✅ Now showing Total Quantity (Billed + Free)
   "BOX PACK": boxPack,
   PACK: finalPack,            // ✅ Pack calculated on Total Quantity
@@ -950,7 +950,7 @@ export const getOrderById = async (req, res, next) => {
       recordsFailed: upload.recordsFailed || 0,
       errors: upload.rowErrors || [],
       warnings: upload.rowWarnings || [],
-      convertedData: upload.convertedData || null,
+      convertedData: fixConvertedDataDisplay(upload.convertedData),
       schemeSummary,
       schemeDetails,
       fileName: upload.fileName,
@@ -972,6 +972,20 @@ export const getOrderById = async (req, res, next) => {
     next(err);
   }
 };
+
+// 🔥 HELPER: Fix display names for historical data
+function fixConvertedDataDisplay(convertedData) {
+  if (!convertedData || !Array.isArray(convertedData.rows)) return convertedData;
+  
+  return {
+    ...convertedData,
+    rows: convertedData.rows.map(row => ({
+      ...row,
+      // Create a display version of ITEMDESC on the fly
+      ITEMDESC: (row.matchedProduct?.productName || row.ITEMDESC || row.manualProduct?.name || "").trim()
+    }))
+  };
+}
 
 export const getOrderHistory = async (req, res) => {
   try {
