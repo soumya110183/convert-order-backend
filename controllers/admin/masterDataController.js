@@ -1605,11 +1605,57 @@ export const exportMasterDatabase = async (req, res) => {
   try {
     const customers = await CustomerMaster.find().sort({ customerCode: 1 }).lean();
     const products = await ProductMaster.find().sort({ productName: 1 }).lean();
+    const schemes = await SchemeMaster.find().lean(); 
 
     // Create workbook
     const wb = XLSX.utils.book_new();
 
-    // Customer sheet with full format
+    // Helper to style headers and set column widths
+    const styleSheet = (sheet, colWidths = [], boldCols = []) => {
+      // Set Column Widths
+      if (colWidths.length > 0) {
+        sheet["!cols"] = colWidths.map(w => ({ wch: w }));
+      }
+
+      // Apply Styles to All Cells
+      const range = XLSX.utils.decode_range(sheet["!ref"]);
+      for (let R = range.s.r; R <= range.e.r; ++R) {
+        for (let C = range.s.c; C <= range.e.c; ++C) {
+          const address = XLSX.utils.encode_cell({ r: R, c: C });
+          if (!sheet[address]) continue;
+
+          // Base Style (Borders)
+          const style = {
+            border: {
+              top: { style: "thin" },
+              bottom: { style: "thin" },
+              left: { style: "thin" },
+              right: { style: "thin" }
+            },
+            font: { sz: 12 }, // Increased data font size
+            alignment: { vertical: "center" }
+          };
+
+          // Header Styling (Row 0)
+          if (R === 0) {
+             style.font = { bold: true, color: { rgb: "FFFFFF" }, sz: 13 }; // Increased header font size
+             style.fill = { fgColor: { rgb: "C00000" } }; // Red
+             style.alignment = { horizontal: "center", vertical: "center" };
+          } 
+          // Data Styling
+          else {
+             if (boldCols.includes(C)) {
+                 style.font.bold = true;
+             }
+          }
+
+          sheet[address].s = style;
+        }
+      }
+      return sheet;
+    };
+
+    // 1. CUSTOMER SHEET
     const customerData = customers.map(c => ({
       "Code": c.customerCode || "",
       "Customer Type": c.customerType || "",
@@ -1633,35 +1679,43 @@ export const exportMasterDatabase = async (req, res) => {
       "Gst No": c.gstNo || "",
       "E Mail": c.email || ""
     }));
-    const customerSheet = XLSX.utils.json_to_sheet(customerData);
-    XLSX.utils.book_append_sheet(wb, customerSheet, "customer db");
 
-    // Product sheet
+    const customerSheet = XLSX.utils.json_to_sheet(customerData);
+    // Increased column widths
+    styleSheet(customerSheet, [20, 20, 50, 40, 40, 40, 20, 15, 20, 25, 20, 20, 20, 25, 20, 20, 25, 20, 20, 25, 30]);
+    XLSX.utils.book_append_sheet(wb, customerSheet, "Customers");
+
+    // 2. PRODUCT SHEET
     const productData = products.map(p => ({
       "SAP Code": p.productCode,
       "Item Desc": p.productName,
-      "Dvn": p.division || ""
+      "Division": p.division || "",
+      "Box Pack": p.boxPack || 0
     }));
+    
+    // Bold 'Item Desc' (Index 1)
     const productSheet = XLSX.utils.json_to_sheet(productData);
-    XLSX.utils.book_append_sheet(wb, productSheet, "product db");
-const schemes = await SchemeMaster.find().lean();
+    // Increased column widths
+    styleSheet(productSheet, [20, 60, 25, 15], [1]); 
+    XLSX.utils.book_append_sheet(wb, productSheet, "Products");
 
-const schemeData = schemes.flatMap(s =>
-  (s.slabs || []).map(slab => ({
-    "Division": s.division,
-    "Product Code": s.productCode,
-    "Product": s.productName,
-    "Min Qty": slab.minQty,
-    "Free Qty": slab.freeQty,
-    "Scheme %": slab.schemePercent * 100
-  }))
-);
-
-XLSX.utils.book_append_sheet(
-  wb,
-  XLSX.utils.json_to_sheet(schemeData),
-  "scheme db"
-);
+    // 3. SCHEME SHEET
+    const schemeData = schemes.flatMap(s => 
+      (s.slabs || []).map(slab => ({
+        "Division": s.division,
+        "Product Code": s.productCode,
+        "Product": s.productName,
+        "Min Qty": slab.minQty,
+        "Free Qty": slab.freeQty,
+        "Scheme %": (slab.schemePercent * 100).toFixed(2) + "%"
+      }))
+    );
+    
+    // Bold 'Product' (Index 2)
+    const schemeSheet = XLSX.utils.json_to_sheet(schemeData);
+    // Increased column widths
+    styleSheet(schemeSheet, [25, 20, 50, 15, 15, 15], [2]);
+    XLSX.utils.book_append_sheet(wb, schemeSheet, "Schemes");
 
     // Generate buffer
     const buffer = XLSX.write(wb, { type: "buffer", bookType: "xlsx" });
