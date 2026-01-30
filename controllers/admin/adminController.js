@@ -160,6 +160,19 @@ export async function getAuditHistory(req, res, next) {
     if (req.query.status) query.status = req.query.status.toUpperCase();
     if (req.query.userId) query.userId = req.query.userId;
 
+    const search = (req.query.search || "").trim();
+    if (search) {
+      const searchRegex = { $regex: search, $options: "i" };
+      query.$or = [
+        { fileName: searchRegex },
+        { status: searchRegex },
+        // Simple regex search on userEmail directly stored in OrderUpload
+        // If searching by User NAME is needed, we need aggregate or 2-step find. 
+        // For now, email search is supported via OrderUpload.userEmail field.
+        { userEmail: searchRegex }
+      ];
+    }
+
     // 🔥 MODIFIED: Fetch from OrderUpload (Actual User Uploads) instead of Audit Log
     const [total, uploads] = await Promise.all([
       OrderUpload.countDocuments(query),
@@ -298,9 +311,27 @@ export async function getRecentUploadsPaginated(req, res, next) {
     const limit = Math.min(Number(req.query.limit) || 10, 50);
     const skip = (page - 1) * limit;
 
+    const search = (req.query.search || "").trim();
+    const query = {};
+
+    if (search) {
+      const searchRegex = { $regex: search, $options: "i" };
+      
+      // We need to find users that match the email/name search first if we want to search by user name
+      // But for performance on direct fields:
+      query.$or = [
+        { fileName: searchRegex },
+        { status: searchRegex },
+        // For user email, we usually need to look up users first or use aggregate.
+        // For now, let's stick to fields present in OrderUpload if possible, 
+        // OR rely on the fact that userEmail IS in OrderUpload schema (lines 11-16 of orderUpload.js)
+        { userEmail: searchRegex } 
+      ];
+    }
+
     const [total, uploads] = await Promise.all([
-      OrderUpload.countDocuments(),
-      OrderUpload.find()
+      OrderUpload.countDocuments(query),
+      OrderUpload.find(query)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
@@ -314,7 +345,7 @@ export async function getRecentUploadsPaginated(req, res, next) {
         id: u._id,
         fileName: u.fileName,
         userName: u.userId?.name || "Unknown",
-        userEmail: u.userId?.email || "",
+        userEmail: u.userId?.email || u.userEmail || "", // Fallback to schema email
         status: u.status,
         processed: u.recordsProcessed || 0,
         failed: u.recordsFailed || 0,
