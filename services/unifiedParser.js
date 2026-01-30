@@ -860,10 +860,12 @@ export function extractProductName(text, qty) {
   // Previously only matched integers (\d+), leaving ".5" behind
   t = t
     // Remove ONLY generic count words, NOT dosage forms
-.replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|NO|NOS|PACK|KIT)\b/gi, "")
+    .replace(/\b(TABS?|TABLETS?|CAPS?|CAPSULES?|NO|NOS|PACK|KIT)\b/gi, "")
 
-    .replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1") // Keep number (int or decimal)
-    .replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "") // Remove standalone units
+    // 🔥 FIXED: Preserve units! Do NOT strip MG/ML/etc.
+    // .replace(/(\d+(?:\.\d+)?)\s*(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "$1") 
+    // .replace(/\b(?:MG|ML|MCG|GM|G|IU|KG)\b/gi, "") 
+    
     .replace(/\b(\d+)\s*['`"]?S\b/gi, "")
     // Fix dot packs in Text Mode (e.g. "TAB.15" -> "TAB")
     // 🔥 FIXED: Don't strip if it looks like a decimal strength (e.g. 2.5)
