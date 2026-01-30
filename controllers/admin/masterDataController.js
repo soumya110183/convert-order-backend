@@ -1939,16 +1939,28 @@ export const getProducts = async (req, res) => {
     const limit = Number(req.query.limit || 10);
     const search = req.query.search || "";
 
-    const query = search
-      ? {
-          $or: [
-  { productName: { $regex: search, $options: "i" } },
-  { cleanedProductName: { $regex: search, $options: "i" } },
-  { productCode: { $regex: search, $options: "i" } }
-]
+    // Flexible Search Logic (e.g. "amlong 5" matches "AMLONG- 5MG")
+    let query = {};
 
-        }
-      : {};
+    if (search && search.trim()) {
+      const term = search.trim();
+      // Replace special characters with space to allow flexible matching
+      // e.g. "amlong-5" -> "amlong 5"
+      const cleanSearch = term.replace(/[^a-zA-Z0-9 ]/g, " ");
+      const searchTerms = cleanSearch.split(/\s+/).filter(Boolean);
+
+      if (searchTerms.length > 0) {
+        query = {
+          $and: searchTerms.map(t => ({
+            $or: [
+              { productName: { $regex: t, $options: "i" } },
+              { cleanedProductName: { $regex: t, $options: "i" } },
+              { productCode: { $regex: t, $options: "i" } }
+            ]
+          }))
+        };
+      }
+    }
 
     const [data, total] = await Promise.all([
       ProductMaster.find(query)
@@ -2115,15 +2127,24 @@ export const getSchemes = async (req, res) => {
     const limit = Number(req.query.limit || 20);
     const search = (req.query.search || "").trim();
 
-    const query = search
-      ? {
-          $or: [
-            { productCode: { $regex: search, $options: "i" } },
-            { productName: { $regex: search, $options: "i" } },
-            { division: { $regex: search, $options: "i" } }
-          ]
-        }
-      : {};
+    let query = {};
+    if (search && search.trim()) {
+       const term = search.trim();
+       const cleanSearch = term.replace(/[^a-zA-Z0-9 ]/g, " ");
+       const searchTerms = cleanSearch.split(/\s+/).filter(Boolean);
+
+       if (searchTerms.length > 0) {
+           query = {
+               $and: searchTerms.map(t => ({
+                   $or: [
+                       { productCode: { $regex: t, $options: "i" } },
+                       { productName: { $regex: t, $options: "i" } },
+                       { division: { $regex: t, $options: "i" } }
+                   ]
+               }))
+           };
+       }
+    }
 
     const schemes = await SchemeMaster.find(query)
       .sort({ division: 1, productName: 1 })
