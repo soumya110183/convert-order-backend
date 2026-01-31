@@ -23,6 +23,10 @@ export const login = async (req, res, next) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    // Update lastLogin
+    user.lastLogin = new Date();
+    await user.save();
+
     const token = generateToken(user);
 
     res.json({
