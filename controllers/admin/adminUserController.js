@@ -197,6 +197,33 @@ export const toggleStatus = async (req, res, next) => {
     next(err);
   }
 };
+/* =====================================================
+   DELETE USER
+   DELETE /api/admin/users/:id
+===================================================== */
+export const deleteUser = async (req, res, next) => {
+  try {
+    // Admin guard handled by middleware
+
+    const user = await User.findByIdAndDelete(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found"
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "User deleted successfully",
+      id: user._id
+    });
+
+  } catch (err) {
+    next(err);
+  }
+};
 
 /* =====================================================
    EXPORTS
@@ -205,5 +232,6 @@ export default {
   getUsers,
   addUser,
   updateRole,
-  toggleStatus
+  toggleStatus,
+  deleteUser
 };

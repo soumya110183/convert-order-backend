@@ -4,6 +4,7 @@ import {
   addUser,
   updateRole,
   toggleStatus,
+  deleteUser,
 } from "../../controllers/admin/adminUserController.js";
 
 import { protect, adminOnly } from "../../middlewares/authMiddleware.js";
@@ -15,6 +16,9 @@ router.use(protect, adminOnly);
 
 router.get("/", getUsers);
 router.post("/", addUser);
+router.put("/:id/role", updateRole);
+router.put("/:id/status", toggleStatus);
+router.delete("/:id", deleteUser);
 // Upload Invoice (User) - REMOVED (Wrong File)
 
 export default router;
