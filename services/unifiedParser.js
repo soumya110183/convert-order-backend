@@ -591,7 +591,8 @@ function extractQuantityFromMergedLine(text) {
     if ([500, 650, 250, 1000, 125, 300, 30, 40, 20, 10, 5, 25, 50, 60, 75, 80, 100, 150, 200, 400].includes(val)) {
         // Strict check: Preceded by product name part?
         // DOLO 650 -> '650' preceded by 'DOLO' (letters)
-        if (prev && /^[A-Z\-]+$/i.test(prev)) {
+        // 🔥 FIX: Ignore single letters like "S" or "-" (common triggers for false blocks)
+        if (prev && /^[A-Z\-]+$/i.test(prev) && prev.length >= 2) {
              console.log(`  [BLOCKED] Likely strength: ${val} (preceded by ${prev})`);
              continue;
         }
@@ -741,7 +742,7 @@ export function extractProductName(text, qty) {
     // Check if there is a strength immediately following the form word
     // e.g. "DOLO TAB 650 MG" -> keep "650 MG"
     const remaining = t.substring(formIndex + formWord.length);
-    const strengthMatch = remaining.match(/^\s*\.?\d+(?:\.\d+)?\s*(MG|ML|GM|MCG|IU|%|G)\b/i);
+    const strengthMatch = remaining.match(/^\s*\.?\s*\d+(?:\.\d+)?\s*(MG|ML|GM|MCG|IU|%|G)\b/i);
     
     if (strengthMatch) {
        // Keep form word + strength
@@ -1909,6 +1910,19 @@ function parseExcel(file) {
       if (isInvalidProductName(itemDesc)) {
         continue;
       }
+
+      // 🔥 STRICTER VALIDATION FOR FALLBACK ROWS WITHOUT QTY
+      // If we are guessing a product name without a quantity, it must look VERY much like a product.
+      if (!qty) {
+          // Reject if it looks like an address or common footer junk
+          if (
+              /\b(LTD|PVT|PRIVATE|LIMITED|ROAD|STREET|LANE|NEAR|OPP|DISTRIBUTORS?|AGENCIES?|ENTERPRISES?)\b/i.test(itemDesc) ||
+              /\b(DETAILS|SPLIT|SUMMARY|TOTAL|VALUE|AUTHORI[SZ]ED|SIGNATORY|COMPANY|COMPAY|COMAPANY|NAME|SUPPLIER|TAX|AMOUNT)\b/i.test(itemDesc) ||
+              /^\d{2,}\/\d+/.test(itemDesc) // Address number pattern like 51/123
+          ) {
+              continue;
+          }
+      }
       
       // 🔥 FINAL VALIDATION: Must look like a product
       if (!isHardJunk(itemDesc)) {
@@ -2039,6 +2053,12 @@ export async function unifiedExtract(file) {
       throw new Error(`Unsupported file format: ${name}`);
     }
     
+    // 🔥 FIX: Ensure rows are sorted by their source position
+    // (Because fallback extraction strategies might append items out of order)
+    if (result && result.dataRows) {
+      result.dataRows.sort((a, b) => (a._sourceRow || 0) - (b._sourceRow || 0));
+    }
+
     console.log(`\n${"=".repeat(70)}`);
     console.log(`✅ EXTRACTION COMPLETE`);
     console.log(`   Extracted: ${result.dataRows.length} products`);

@@ -1,0 +1,4 @@
+=========================================\n🔍 FULL VERIFICATION SIMULATION\n=========================================\n
+🔹 Test 1: Excel Row 2 (S Block)\n   ✅ Extraction Success\n
+🔹 Test 2: Matching Check 1\n   Input: "AVAS EZ 10"\n   ✅ Matched: AVAS EZ 10 (Conf: 1)\n
+🔹 Test 3: Matching Check 2\n   Input: "AVAS F"\n   ✅ Matched: AVAS-F (Conf: 1)\n

@@ -52,11 +52,11 @@ router.use(protect);
 // Upload endpoint
 // router.post("/upload", uploadLimiter, upload.single("file"), extractOrderFields); 
 // Disabling limiter as per user request
-router.post("/upload", upload.single("file"), extractOrderFields);
+router.post("/upload", upload.array("files"), extractOrderFields);
 import { validateFile } from "../middlewares/inputValidation.js";
 
 // Step 1: Upload & extract
-router.post("/extract", upload.single("file"), validateFile, extractOrderFields);
+router.post("/extract", upload.array("files"), validateFile, extractOrderFields);
 
 // Step 2: Convert
 // Step 2: Convert

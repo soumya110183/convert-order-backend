@@ -64,45 +64,44 @@ const SchemeEngine = {
     /**
      * RULE 2 & 3: PATTERN DETECTION & AUTO SLAB GENERATION
      */
+    /**
+     * RULE 2 & 3: STRICT BASE LINEAR PATTERN
+     * Identify the SMALLEST slab as "Base".
+     * Generate ONLY strict multiples: Base, Base*2, Base*3...
+     * IGNORE all other explicit slabs that do not fit this pattern.
+     */
     generateVirtualSlabs: (explicitSlabs, orderQty) => {
-        // Sort explicit
+        // 1. Find the Base Slab (Smallest Quantity)
         const sorted = [...explicitSlabs].filter(s => s.minQty > 0).sort((a, b) => a.minQty - b.minQty);
         if (sorted.length === 0) return [];
 
-        // Base Pattern = Smallest Explicit Slab
         const base = sorted[0];
         const baseQty = base.minQty;
         const baseFree = base.freeQty;
 
-        // Max target to generate up to (cover orderQty + buffer for upsell)
+        // 2. Determine target range (cover current order + room for upsell)
+        // Ensure we cover at least the orderQty, or a reasonable multiple if order is small
         const maxTarget = Math.max(orderQty * 2, baseQty * 10); 
         
         const allSlabs = [];
         let multiplier = 1;
         let currentQty = baseQty;
 
+        // 3. Generate Linear Series (Strict Multiples)
         while (currentQty <= maxTarget) {
-            // Check if explicit override exists for this qty
-            const explicit = sorted.find(s => s.minQty === currentQty);
-            
-            if (explicit) {
-                // RULE 7: PREFER LARGEST EXPLICIT
-                allSlabs.push({ ...explicit, isVirtual: false });
-            } else {
-                // RULE 3: AUTO GENERATE (N * Base)
-                allSlabs.push({
-                    minQty: currentQty,
-                    freeQty: multiplier * baseFree, // N * base_free
-                    isVirtual: true,
-                    schemeName: `Auto-Pattern (x${multiplier})`
-                });
-            }
+            allSlabs.push({
+                minQty: currentQty,
+                freeQty: multiplier * baseFree,
+                isVirtual: multiplier > 1, // First one is real, others virtual
+                schemeName: multiplier > 1 ? `Auto-Pattern (x${multiplier})` : base.schemeName,
+                schemePercent: base.schemePercent
+            });
 
             multiplier++;
             currentQty = baseQty * multiplier;
         }
 
-        return allSlabs.sort((a, b) => a.minQty - b.minQty);
+        return allSlabs;
     },
 
     /**

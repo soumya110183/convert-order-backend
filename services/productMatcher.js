@@ -255,18 +255,10 @@ function exactMatch(invoiceText, product) {
     return 1.0; // Same words, just different order
   }
 
-  // Close match (one contains other)
-  if (inv.includes(prod) || prod.includes(inv)) {
-    const lenDiff = Math.abs(inv.length - prod.length);
-    
-    // If difference is small (just form word or unit), consider it exact
-    if (lenDiff <= 4) { // "TABS" = 4 chars, "MG" = 2 chars
-      return 1.0;
-    }
-    
-    return 0.95;
-  }
-
+  // 🔥 STRICTER: Partial containment is NOT an exact match
+  // It caused "AVAS EZ" to match "AVAS" with 1.0 confidence
+  // We now delegate partial matches to 'cleanedMatch' or 'similarity'
+  
   return 0;
 }
 
@@ -406,7 +398,7 @@ const cleaned = normalizeProductName(
   let bestScore = 0;
   let matchType = "";
 
-  console.log(`🔍 Matching: "${cleaned}" (original: "${invoiceDesc}")`);
+// 🔍 Matching logic starts here
 
  for (const p of products) {
   let score = 0;

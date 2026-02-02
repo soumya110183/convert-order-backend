@@ -5,7 +5,10 @@ export const validateFile = (req, res, next) => {
   // but for express req.file it's easier to check directly or wrap.
   // We'll enforce that a file MUST be present for upload routes.
   
-  if (!req.file) {
+  const hasSingle = !!req.file;
+  const hasMultiple = req.files && Array.isArray(req.files) && req.files.length > 0;
+
+  if (!hasSingle && !hasMultiple) {
     return res.status(400).json({
       success: false,
       error: "VALIDATION_ERROR",

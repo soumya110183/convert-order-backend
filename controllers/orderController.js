@@ -70,57 +70,27 @@ function isJunkLine(text = "") {
 
 export const extractOrderFields = async (req, res, next) => {
   try {
-    if (!req.file) {
+    // 📂 Supports both single file (req.file) and multiple (req.files)
+    const files = req.files || (req.file ? [req.file] : []);
+
+    if (!files || files.length === 0) {
       return res.status(400).json({ 
         success: false, 
-        message: "No file uploaded" 
+        message: "No files uploaded" 
       });
     }
 
     console.log(`\n${"=".repeat(70)}`);
-    console.log(`📤 UPLOAD: ${req.file.originalname} (${(req.file.size / 1024).toFixed(1)} KB)`);
+    console.log(`📤 MULTI-UPLOAD: Processing ${files.length} files`);
     console.log(`${"=".repeat(70)}`);
 
-    // STEP 1: Extract from file
-    console.log("\n⏳ STEP 1: Extracting data from file...\n");
-    const extracted = await unifiedExtract(req.file);
-
-    // Check if extraction succeeded
-    if (!extracted || !extracted.dataRows) {
-      console.error("❌ Extraction returned no data structure");
-      return res.status(500).json({
-        success: false,
-        message: "File extraction failed. Please check file format."
-      });
-    }
-
-    // If no rows extracted, return with helpful message
-    if (extracted.dataRows.length === 0) {
-      console.warn("⚠️  No product rows could be extracted");
-      
-      return res.status(200).json({
-        success: false,
-        dataRows: [],
-        meta: extracted.meta || {},
-        extractionFailed: true,
-        message: "No product rows found in the file.",
-        suggestion: "Please ensure the file contains product data with quantities. Common formats: 'PRODUCT NAME 10'S 50 1500.00'"
-      });
-    }
-
-    console.log(`✅ Extracted ${extracted.dataRows.length} product rows\n`);
-
-    // STEP 2: Load master data
-    console.log("⏳ STEP 2: Loading master data...\n");
+    // 🏗️ Load Master Data ONCE for efficient processing
     const [rawProducts, customers] = await Promise.all([
       ProductMaster.find({}).lean(),
       CustomerMaster.find({}).lean()
     ]);
-
     const products = preprocessProducts(rawProducts);
-    console.log(`✅ Loaded ${products.length} products, ${customers.length} customers\n`);
 
-    // Check if we have products to match against
     if (products.length === 0) {
       return res.status(500).json({
         success: false,
@@ -128,233 +98,213 @@ export const extractOrderFields = async (req, res, next) => {
       });
     }
 
-    // STEP 3: Customer matching
-    console.log("⏳ STEP 3: Matching customer...\n");
-    const customerMatch = matchCustomerSmart(
-      extracted.meta?.customerName,
-      customers
-    );
+    console.log(`✅ Master Data Loaded: ${products.length} products, ${customers.length} customers\n`);
 
-    console.log(`✅ Customer: ${customerMatch.auto?.customerName || 'UNKNOWN'} (${customerMatch.source})\n`);
+    const results = [];
+    let globalSuccess = true;
 
-    // STEP 4: Product matching
-    console.log("⏳ STEP 4: Matching products...\n");
-    
-    const validRows = [];
-    const failedMatches = [];
-    const matchStats = {
-      total: extracted.dataRows.length,
-      matched: 0,
-      failed: 0
-    };
+    // 🔄 Loop through each file
+    const seenHashes = new Set();
 
-    for (let i = 0; i < extracted.dataRows.length; i++) {
-      const row = extracted.dataRows[i];
-      const rowNum = i + 1;
-
-      // Validate quantity
-      const qty = Number(row.ORDERQTY);
-      if (!qty || qty <= 0 || isNaN(qty)) {
-        matchStats.failed++;
-        if (failedMatches.length < MAX_FAILED_MATCHES) {
-          failedMatches.push({
-            row: rowNum,
-            original: row.ITEMDESC,
-            reason: 'Invalid quantity',
-            qty: row.ORDERQTY
-          });
-        }
-        continue;
-      }
-
-      // Clean description
-      let rawDesc = stripLeadingCodes(row.ITEMDESC || "");
-      let cleanedDesc = cleanInvoiceDesc(rawDesc);
-
-      if (!cleanedDesc || cleanedDesc.length < MIN_PRODUCT_LENGTH) {
-        matchStats.failed++;
-        if (failedMatches.length < MAX_FAILED_MATCHES) {
-          failedMatches.push({
-            row: rowNum,
-            original: row.ITEMDESC,
-            cleaned: cleanedDesc,
-            reason: 'Description too short'
-          });
-        }
-        continue;
-      }
-
-      if (isJunkLine(cleanedDesc)) {
-        matchStats.failed++;
-        continue;
-      }
-
-      // Match product
-      const match = matchProductSmart(cleanedDesc, products);
-
-   // 🔥 NEW: Handle candidates (no exact match, but similar products found)
-   if (match && match.matchedProduct === null && match.candidates) {
-     matchStats.failed++;
-     
-     validRows.push({
-       ITEMDESC: cleanedDesc,
-       ORDERQTY: qty,
-       matchedProduct: null,
-       matchFailed: true,
-       matchReason: match.reason || "MANUAL_SELECTION_REQUIRED",
-       candidates: match.candidates, // 🔥 Pass candidates to frontend
-       SAPCODE: "",
-       PACK: 0,
-       "BOX PACK": 0,
-       DVN: ""
-     });
-     
-     continue;
-   }
-
-   if (!match) {
-  matchStats.failed++;
-
-  validRows.push({
-    ITEMDESC: cleanedDesc,
-    ORDERQTY: qty,
-    matchedProduct: null,        // 👈 key change
-    matchFailed: true,
-    matchReason: "AUTO_MATCH_FAILED",
-    SAPCODE: "",
-    PACK: 0,
-    "BOX PACK": 0,
-    DVN: ""
-  });
-
-  continue;
-}
-
-
-      // Success!
-      matchStats.matched++;
-
-      const boxPack = match.boxPack || 0;
-      const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
-
-      validRows.push({
-        ITEMDESC: (match.productName || cleanedDesc).trim(),
-        ORDERQTY: qty,
-        matchedProduct: {
-          _id: match._id,
-          productCode: match.productCode,
-          productName: match.productName,
-          cleanedProductName: match.cleanedProductName,
-          baseName: match.baseName,
-          dosage: match.dosage, 
-          strength: match.dosage, // ✅ Added ALIAS for frontend compatibility
-          variant: match.variant,
-          division: match.division,
-          confidence: match.confidence,
-          matchType: match.matchType,
-          pack: pack,
-          boxPack: boxPack
-        },
-        SAPCODE: match.productCode,
-        PACK: pack,
-        "BOX PACK": boxPack,
-        DVN: match.division || ""
-      });
-    }
-
-    const successRate = ((matchStats.matched / matchStats.total) * 100).toFixed(1);
-
-    console.log(`\n${"=".repeat(70)}`);
-    console.log(`📊 MATCHING SUMMARY:`);
-    console.log(`   Total extracted: ${matchStats.total}`);
-    console.log(`   ✅ Matched: ${matchStats.matched}`);
-    console.log(`   ❌ Failed: ${matchStats.failed}`);
-    console.log(`   Success rate: ${successRate}%`);
-    console.log(`${"=".repeat(70)}\n`);
-
-    // Even if we have SOME matches, allow continuation
-    if (validRows.length === 0) {
-      // Show detailed failure info
-      console.log("\n⚠️  MATCH FAILURE ANALYSIS:");
+    for (const file of files) {
+      console.log(`\n⏳ Processing File: ${file.originalname} (${(file.size / 1024).toFixed(1)} KB)...`);
       
-      if (failedMatches.length > 0) {
-        console.log(`\nTop failed items:`);
-        failedMatches.slice(0, 5).forEach(f => {
-          console.log(`  • Row ${f.row}: "${f.cleaned || f.original}"`);
-          console.log(`    Reason: ${f.reason}`);
-        });
+      // 🛡️ DEDUPLICATION: Check if file content was already processed in this batch
+      const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
+      if (seenHashes.has(fileHash)) {
+          console.warn(`⚠️ SKIPPING DUPLICATE FILE: ${file.originalname} (Matches content of another file in this batch)`);
+          results.push({
+             status: "SKIPPED",
+             fileName: file.originalname,
+             message: "Duplicate file detected in batch",
+             error: "Likely a duplicate upload"
+          });
+          continue;
       }
+      seenHashes.add(fileHash);
 
-      return res.status(422).json({
-        success: false,
-        message: "No products could be matched to your master database",
-        extracted: extracted.dataRows.length,
-        matched: 0,
-        failed: matchStats.failed,
-        failedMatches: failedMatches.slice(0, 10),
-        totalFailed: failedMatches.length,
-        suggestions: [
-          "Check if product names in the invoice match your master data",
-          "Example from your file: " + (extracted.dataRows[0]?.ITEMDESC || 'N/A'),
-          "Consider adding these products to your master database",
-          "Verify the invoice format is standard"
-        ]
-      });
+      try {
+        // STEP 1: Extract
+        const extracted = await unifiedExtract(file);
+        
+        if (!extracted || !extracted.dataRows || extracted.dataRows.length === 0) {
+           console.warn(`⚠️  No rows in ${file.originalname}`);
+           results.push({
+             status: "FAILED",
+             fileName: file.originalname,
+             message: "No product rows found.",
+             error: "Extraction failed"
+           });
+           continue;
+        }
+
+        // STEP 2: Match Customer
+        const customerMatch = matchCustomerSmart(extracted.meta?.customerName, customers);
+        console.log(`   👤 Customer: ${customerMatch.auto?.customerName || 'UNKNOWN'} (${customerMatch.source})`);
+
+        // STEP 3: Match Products
+        const validRows = [];
+        const failedMatches = [];
+        let matchedCount = 0;
+        let failedCount = 0;
+
+        for (let i = 0; i < extracted.dataRows.length; i++) {
+          const row = extracted.dataRows[i];
+          const rowNum = i + 1;
+
+          // Reuse existing validation logic
+          const qty = Number(row.ORDERQTY);
+          if (!qty || qty <= 0 || isNaN(qty)) {
+            failedCount++;
+            if (failedMatches.length < MAX_FAILED_MATCHES) {
+              failedMatches.push({
+                 row: rowNum, original: row.ITEMDESC, reason: 'Invalid qty', qty: row.ORDERQTY
+              });
+            }
+            continue;
+          }
+
+          let rawDesc = stripLeadingCodes(row.ITEMDESC || "");
+          let cleanedDesc = cleanInvoiceDesc(rawDesc);
+
+          if (!cleanedDesc || cleanedDesc.length < MIN_PRODUCT_LENGTH) {
+            failedCount++;
+            if (failedMatches.length < MAX_FAILED_MATCHES) {
+                failedMatches.push({ row: rowNum, original: row.ITEMDESC, reason: 'Desc too short' });
+            }
+            continue;
+          }
+           if (isJunkLine(cleanedDesc)) {
+            failedCount++;
+            continue;
+          }
+
+          // Match
+          const match = matchProductSmart(cleanedDesc, products);
+          
+          // Handle candidates/partial matches
+          if (match && match.matchedProduct === null && match.candidates) {
+             failedCount++;
+             validRows.push({
+                ITEMDESC: cleanedDesc,
+                ORDERQTY: qty,
+                matchedProduct: null,
+                matchFailed: true,
+                matchReason: match.reason || "MANUAL_SELECTION_REQUIRED",
+                candidates: match.candidates,
+                SAPCODE: "", PACK: 0, "BOX PACK": 0, DVN: ""
+             });
+             continue;
+          }
+
+          if (!match) {
+             failedCount++;
+             validRows.push({
+                ITEMDESC: cleanedDesc,
+                ORDERQTY: qty,
+                matchedProduct: null,
+                matchFailed: true,
+                matchReason: "AUTO_MATCH_FAILED",
+                SAPCODE: "", PACK: 0, "BOX PACK": 0, DVN: ""
+             });
+             continue;
+          }
+
+          // Success
+          matchedCount++;
+          const boxPack = match.boxPack || 0;
+          const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
+
+          validRows.push({
+             ITEMDESC: cleanedDesc.trim(),
+             ORDERQTY: qty,
+             matchedProduct: {
+               _id: match._id,
+               productCode: match.productCode,
+               productName: match.productName,
+               cleanedProductName: match.cleanedProductName,
+               baseName: match.baseName,
+               dosage: match.dosage,
+               strength: match.dosage,
+               variant: match.variant,
+               division: match.division,
+               confidence: match.confidence,
+               pack: pack,
+               boxPack: boxPack
+             },
+             SAPCODE: match.productCode,
+             PACK: pack, "BOX PACK": boxPack, DVN: match.division || ""
+          });
+        }
+
+        // STEP 4: Save to DB
+        const fileHash = crypto.createHash("sha256").update(file.buffer).digest("hex");
+        
+        const upload = await OrderUpload.create({
+          userId: req.user.id,
+          userEmail: req.user.email,
+          fileName: file.originalname,
+          fileHash,
+          status: "EXTRACTED",
+          extractedData: { dataRows: validRows },
+          failedMatches: failedMatches.slice(0, MAX_FAILED_MATCHES),
+          customerCode: customerMatch.auto?.customerCode || null,
+          customerName: customerMatch.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
+          recordsProcessed: validRows.length,
+          recordsFailed: failedCount
+        });
+
+        console.log(`   ✅ Saved ID: ${upload._id} | Success: ${matchedCount} | Failed: ${failedCount}`);
+
+        results.push({
+           status: "SUCCESS",
+           fileName: file.originalname,
+           uploadId: upload._id,
+           dataRows: validRows, // Provide rows for frontend state
+           customer: {
+             name: customerMatch.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
+             code: customerMatch.auto?.customerCode || "",
+             city: customerMatch.auto?.city || "",
+             state: customerMatch.auto?.state || "",
+             source: customerMatch.source,
+             confidence: customerMatch.confidence || 0,
+             candidates: customerMatch.candidates || [],
+             needsConfirmation: customerMatch.source === 'MANUAL_REQUIRED',
+             autoSelected: customerMatch.source === 'EXACT' || customerMatch.source === 'FUZZY_AUTO'
+           },
+           stats: {
+             extracted: validRows.length + failedCount, // Approximation
+             matched: matchedCount,
+             failed: failedCount,
+             successRate: ((matchedCount / (matchedCount + failedCount || 1)) * 100).toFixed(1) + '%'
+           },
+           failedMatches: failedMatches.slice(0, 5),
+           hasPartialMatch: matchedCount > 0 && failedCount > 0
+        });
+
+      } catch (fileErr) {
+        console.error(`❌ Error processing ${file.originalname}:`, fileErr);
+        results.push({
+           status: "ERROR",
+           fileName: file.originalname,
+           message: "Internal processing error",
+           error: fileErr.message
+        });
+        globalSuccess = false;
+      }
     }
 
-    // STEP 5: Save to database
-    console.log("⏳ STEP 5: Saving to database...\n");
-    
-    const fileHash = crypto
-      .createHash("sha256")
-      .update(req.file.buffer)
-      .digest("hex");
+    console.log(`\n🏁 ALL FILES PROCESSED: ${results.length}`);
 
-    const upload = await OrderUpload.create({
-      userId: req.user.id,
-      userEmail: req.user.email,
-      fileName: req.file.originalname,
-      fileHash,
-      status: "EXTRACTED",
-      extractedData: { dataRows: validRows },
-      failedMatches: failedMatches.slice(0, MAX_FAILED_MATCHES),
-      customerCode: customerMatch.auto?.customerCode || null,
-      customerName: customerMatch.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
-      recordsProcessed: validRows.length,
-      recordsFailed: matchStats.failed
-    });
-
-    console.log(`✅ Saved with ID: ${upload._id}\n`);
-
-    // Return success (even if partial)
-    res.json({
-      success: true,
-      uploadId: upload._id,
-      dataRows: validRows,
-      customer: {
-        name: customerMatch.auto?.customerName || extracted.meta?.customerName || "UNKNOWN",
-        code: customerMatch.auto?.customerCode || "",
-        city: customerMatch.auto?.city || "",
-        state: customerMatch.auto?.state || "",
-        source: customerMatch.source,
-        confidence: customerMatch.confidence || 0,
-        candidates: customerMatch.candidates || [],
-        needsConfirmation: customerMatch.source === 'MANUAL_REQUIRED',
-        autoSelected: customerMatch.source === 'EXACT' || customerMatch.source === 'FUZZY_AUTO'
-      },
-      stats: {
-        extracted: matchStats.total,
-        matched: matchStats.matched,
-        failed: matchStats.failed,
-        successRate: successRate + '%'
-      },
-      failedMatches: failedMatches.slice(0, 5),
-      hasPartialMatch: matchStats.matched > 0 && matchStats.failed > 0
+    // Return aggregated results
+    return res.json({
+      success: true, // Always true if at least handled, frontend checks 'status' of each
+      results: results,
+      message: `Processed ${results.length} files`
     });
 
   } catch (err) {
-    console.error("\n❌ EXTRACTION ERROR:", err);
-    console.error(err.stack);
+    console.error("\n❌ GLOBAL UPLOAD ERROR:", err);
     next(err);
   }
 };
@@ -520,6 +470,10 @@ if (hasSheets) {
 
       const pack = boxPack > 0 ? Math.ceil(qty / boxPack) : 0;
 
+      // Use row-level customer if available (for multi-file batches), else global
+      const rowCustomerCode = row.customerCode || customer.customerCode;
+      const rowCustomerName = row.customerName || customer.customerName;
+
       let schemeResult;
       
       // 🔥 TRUST FRONTEND (Source of Truth)
@@ -540,7 +494,7 @@ if (hasSheets) {
               orderQty: qty,
               itemDesc: row.ITEMDESC,
               division: row.DVN,
-              customerCode: customer.customerCode, // ✅ Added customer context
+              customerCode: rowCustomerCode, // ✅ Added customer context (row level priority)
               schemes
             });
       }
@@ -551,7 +505,7 @@ if (hasSheets) {
           orderQty: qty,
           itemDesc: row.ITEMDESC,
           division: row.DVN,
-          customerCode: customer.customerCode,
+          customerCode: rowCustomerCode,
           schemes
       });
 
@@ -575,8 +529,8 @@ if (hasSheets) {
       const finalPack = boxPack > 0 ? Math.ceil(finalQty / boxPack) : 0;
 
       output.push({
-  CODE: customer.customerCode,
-  "CUSTOMER NAME": customer.customerName,
+  CODE: rowCustomerCode,
+  "CUSTOMER NAME": rowCustomerName,
   SAPCODE: productCode,       // ✅ correct
   ITEMDESC: (row.matchedProduct?.productName || row.ITEMDESC || row.manualProduct?.name || "").trim(),
   ORDERQTY: finalQty,         // ✅ Now showing Total Quantity (Billed + Free)

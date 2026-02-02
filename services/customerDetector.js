@@ -13,44 +13,7 @@
 export function detectCustomerFromInvoice(rows = [], filename = "") {
   if (!rows || !rows.length) return null;
 
-  // ✅ STRATEGY -1: FILENAME DETECTION (High Confidence if present)
-  // e.g. "STAR_PHARMACEUTICALS_X_OP001105.XLS" -> "STAR PHARMACEUTICALS"
-  if (filename) {
-      // Decode filename: replace separators with spaces
-      const decoded = filename
-        .replace(/\.(xls|xlsx|pdf|csv|txt)$/i, "")
-        .replace(/[-_.]/g, " "); // Replace all separators with space
 
-      // Extract words
-      const words = decoded.split(/\s+/).filter(w => w.length > 0);
-      let potentialName = "";
-      
-      for (const w of words) {
-          // Stop at first number or code-like token (e.g. OP001, 2024, 123)
-          if (/\d/.test(w)) break;
-          
-          // Stop at common keywords that start the non-name part
-          if (/^(ORDER|INV|INVOICE|BILL|PO)$/i.test(w)) break;
-
-          // Skip specific noise words (like "X" used as separator)
-          if (/^[X]$/i.test(w)) continue; 
-
-          // Skip generic single letters (unless '&') - typically initials are handled differently or stuck to names
-          // But "X" is the specific complaint. 
-          
-          potentialName += w + " ";
-      }
-      
-      potentialName = potentialName.trim();
-      
-      // Post-cleanup: Remove trailing single letters if any left
-      potentialName = potentialName.replace(/\s+[A-Z]$/, "");
-
-      if (potentialName.length > 3 && isValidCustomerName(potentialName)) {
-         console.log(`✅ Customer detected (Filename): "${potentialName}"`);
-         return cleanCustomerName(potentialName);
-      }
-  }
 
   // ✅ STEP 1: Build headerText FIRST (required for all strategies)
   const headerText = rows
@@ -93,8 +56,8 @@ export function detectCustomerFromInvoice(rows = [], filename = "") {
     const total = line.match(/[A-Z]/gi)?.length || 0;
     if (total === 0 || letters / total < 0.7) continue;
 
-    // Must look like business name - 🔥 EXPANDED (Added PHARMACEUTICALS explicitly)
-    const isBusiness = /\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|PHARMACEUTICALS?|MEDICAL|DISTRIBUTORS?|ENTERPRISES?|DRUG\s*HOUSE|DRUGS?|WHOLESALE|RETAIL|STORES?|MART|DEPOT|STOCKIST|SURGICALS?|SUPPLIERS?|CO\.?|CORPORATION|CHEMISTS?|HEALTH\s*CARE|HOSPITALS?|CLINICS?|MEDICARE)\b/i.test(line);
+    // Must look like business name - 🔥 EXPANDED (Added LIMITED, PVT, etc.)
+    const isBusiness = /\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|PHARMACEUTICALS?|MEDICAL|DISTRIBUTORS?|ENTERPRISES?|DRUG\s*HOUSE|DRUGS?|WHOLESALE|RETAIL|STORES?|MART|DEPOT|STOCKIST|SURGICALS?|SUPPLIERS?|CO\.?|CORPORATION|CHEMISTS?|HEALTH\s*CARE|HOSPITALS?|CLINICS?|MEDICARE|LIMITED|LTD|PVT|PRIVATE)\b/i.test(line);
     
     // console.log(`DEBUG: Line "${line}" | Business: ${isBusiness}`);
     
@@ -139,6 +102,47 @@ export function detectCustomerFromInvoice(rows = [], filename = "") {
   ===================================================== */
 
   // ... keep your existing Strategy 2, 3, 4 unchanged ...
+
+  /* =====================================================
+     STRATEGY 5: FILENAME FALLBACK (MOVED TO END)
+     Use filename only if no header text matches
+  ===================================================== */
+  if (filename) {
+      // Decode filename: replace separators with spaces
+      const decoded = filename
+        .replace(/\.(xls|xlsx|pdf|csv|txt)$/i, "")
+        .replace(/[-_.]/g, " "); // Replace all separators with space
+
+      // Extract words
+      const words = decoded.split(/\s+/).filter(w => w.length > 0);
+      let potentialName = "";
+      
+      for (const w of words) {
+          // Stop at first number or code-like token (e.g. OP001, 2024, 123)
+          if (/\d/.test(w)) break;
+          
+          // Stop at common keywords that start the non-name part
+          if (/^(ORDER|INV|INVOICE|BILL|PO)$/i.test(w)) break;
+
+          // Skip specific noise words (like "X" used as separator)
+          if (/^[X]$/i.test(w)) continue; 
+
+          // Skip generic single letters (unless '&') - typically initials are handled differently or stuck to names
+          // But "X" is the specific complaint. 
+          
+          potentialName += w + " ";
+      }
+      
+      potentialName = potentialName.trim();
+      
+      // Post-cleanup: Remove trailing single letters if any left
+      potentialName = potentialName.replace(/\s+[A-Z]$/, "");
+
+      if (potentialName.length > 3 && isValidCustomerName(potentialName)) {
+         console.log(`✅ Customer detected (Filename Fallback): "${potentialName}"`);
+         return cleanCustomerName(potentialName);
+      }
+  }
 
   console.log('⚠️ No customer detected in invoice');
   return null;
