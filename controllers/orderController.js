@@ -324,6 +324,7 @@ const headerStyle = {
 };
 
 const normalCellStyle = {
+  font:{sz:14},
   border: {
     top: { style: "thin" }, bottom: { style: "thin" },
     left: { style: "thin" }, right: { style: "thin" }
@@ -331,6 +332,7 @@ const normalCellStyle = {
 };
 
 const qtyCellStyle = {
+  font:{sz:12},
   fill: { patternType: "solid", fgColor: { rgb: "FFFF99" } },
   alignment: { horizontal: "center" },
   border: {
