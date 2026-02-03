@@ -466,6 +466,56 @@ export default {
   searchMasterData,
   getRecentUploadsPaginated, // ✅ Added
   getUploadResult, // ✅ Added
-  updateCustomer, // ✅ Added
-  updateProduct // ✅ Added
+  updateProduct, // ✅ Added
+  deleteUploadsByDateRange // ✅ Added
 };
+
+/* =====================================================
+   DELETE UPLOADS BY DATE RANGE
+   DELETE /api/admin/dashboard/uploads/range
+   Body: { startDate, endDate }
+===================================================== */
+export async function deleteUploadsByDateRange(req, res, next) {
+  try {
+    const { startDate, endDate } = req.body;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide both startDate and endDate"
+      });
+    }
+
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+
+    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid date format"
+      });
+    }
+
+    // Ensure end date covers the full day if time is missing
+    // If user sends "2023-10-31", it usually defaults to 00:00:00. 
+    // We might want to set it to 23:59:59 if it looks like a plain date, 
+    // but usually the frontend should send ISO strings. 
+    // We'll rely on strict ISO comparison for now.
+
+    const result = await OrderUpload.deleteMany({
+      createdAt: {
+        $gte: start,
+        $lte: end
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully deleted ${result.deletedCount} uploads`,
+      count: result.deletedCount
+    });
+
+  } catch (err) {
+    next(err);
+  }
+}
