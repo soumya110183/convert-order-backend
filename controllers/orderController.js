@@ -57,7 +57,7 @@ function preprocessProducts(products) {
 function isJunkLine(text = "") {
   const upper = text.toUpperCase();
   return (
-    upper.length < MIN_PRODUCT_LENGTH ||
+   
     upper.length < MIN_PRODUCT_LENGTH ||
     /^(APPROX|PRINTED|SUPPLIER|GSTIN|DL NO|PAGE)/i.test(upper) ||
     /^MICRO\s+(LABS|DIVISION|HEALTHCARE)/i.test(upper) // Only block MICRO headers, allow MICRODOX
