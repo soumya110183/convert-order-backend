@@ -1,10 +1,3 @@
-/**
- * ORDER CONTROLLER - ULTRA ROBUST v5.0
- * ✅ Never returns "no rows extracted" error
- * ✅ Shows partial results even with low match rate
- * ✅ Detailed diagnostics for failed matches
- * ✅ Suggests fixes when matching fails
- */
 
 import OrderUpload from "../models/orderUpload.js";
 import ProductMaster from "../models/productMaster.js";
@@ -17,14 +10,14 @@ import path from "path";
 import fs from "fs";
 
 import { unifiedExtract } from "../services/unifiedParser.js";
-import { matchProductSmart, matchProductsBatch } from "../services/productMatcher.js";
+import { matchProductSmart } from "../services/productMatcher.js";
 import { applyScheme, findUpsellOpportunity } from "../services/schemeMatcher.js";
 import { matchCustomerSmart } from "../services/customerMatcher.js";
 import { stripLeadingCodes, cleanInvoiceDesc } from "../utils/invoiceUtils.js";
 import { splitProduct } from "../utils/splitProducts.js";
 
 /* =====================================================
-   CONFIGURATION
+   CONFIGURATION                                    
 ===================================================== */
 
 const TEMPLATE_COLUMNS = [

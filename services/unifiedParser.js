@@ -2,6 +2,7 @@
 
 import XLSX from "xlsx-js-style";
 import { extractTextFromPDFAdvanced } from "./pdfParser.js";
+import { extractTextFromImage } from "./imageParser.js";
 import { detectCustomerFromInvoice } from "./customerDetector.js";
 import { mergePDFRowsTableAware } from "../utils/tableAwareMerging.js";
 import { normalizeProductName } from "../utils/productNormalizer.js";
@@ -2030,6 +2031,147 @@ function parseText(file) {
 }
 
 /* =====================================================
+   IMAGE PARSING (OCR)
+===================================================== */
+
+async function parseImage(file) {
+  const { rows, lines } = await extractTextFromImage(file.buffer);
+
+  // Use the raw text lines directly — no PDF-style Y-coordinate merging
+  // (OCR rows all have y:0, so mergePDFRowsTableAware collapses everything into 1 row)
+  const rawLines = lines;
+
+  debug(`\n🖼️  IMAGE: ${rawLines.length} raw OCR lines`);
+
+  // Log first 15 lines for debugging
+  console.log(`\n🔍 OCR RAW LINES (first 15):`);
+  rawLines.slice(0, 15).forEach((line, i) => {
+    console.log(`  ${i + 1}. "${line}"`);
+  });
+
+  const customerName = detectCustomerFromInvoice(rawLines, file.originalname);
+
+  const dataRows = [];
+  const failed = [];
+  // Process each OCR line individually (no merging needed for OCR)
+  for (let i = 0; i < rawLines.length; i++) {
+    let text = rawLines[i]?.trim();
+    if (!text || text.length < MIN_PRODUCT_LENGTH) continue;
+
+    // Skip total/summary lines
+    if (/^(TOTAL|GRAND TOTAL|SUB TOTAL|NET AMOUNT|APPROXIMATE\s*VALUE)/i.test(text)) continue;
+
+    if (isHardJunk(text)) {
+      debug(`⛔ Row ${i + 1}: Junk "${text}"`);
+      continue;
+    }
+
+    text = text.replace(/^MICR\s+/i, "");
+
+    // Try to extract quantity
+    let qty = extractQuantity(text);
+
+    // If qty missing, check NEXT line for qty-only pattern
+    if (!qty) {
+      const next = rawLines[i + 1]?.trim();
+      if (next) {
+        const nextQty = extractQuantityFromQtyLine(next);
+        if (nextQty) {
+          qty = nextQty;
+          // found qty in next line
+        }
+      }
+    }
+
+    // Try adjacent row extraction
+    if (!qty) {
+      qty = extractQuantityFromAdjacentRows(text, rawLines);
+    }
+
+    // STRICT: Has pharma keywords (MG, TAB, CAP, etc.)
+    if (looksLikeProduct(text, true)) {
+      if (!qty) {
+        failed.push({ row: i + 1, text, reason: "No quantity" });
+        continue;
+      }
+
+      const itemDesc = extractProductName(text, qty);
+      if (!itemDesc || itemDesc.length < MIN_PRODUCT_LENGTH) {
+        failed.push({ row: i + 1, text, qty, reason: "No product name" });
+        continue;
+      }
+
+      const cleanedName = cleanExtractedProductName(itemDesc);
+      if (!cleanedName || cleanedName.length < MIN_PRODUCT_LENGTH) {
+        failed.push({ row: i + 1, text, qty, reason: "Cleaned name too short" });
+        continue;
+      }
+
+      console.log(`  ✅ Row ${i + 1}: "${cleanedName}" | Qty: ${qty}`);
+      dataRows.push({
+        ITEMDESC: cleanedName,
+        ORDERQTY: qty,
+        _rawText: text,
+        _sourceRow: i + 1
+      });
+      continue;
+    }
+
+    // RELAXED: Structural patterns (brand + number, multiple caps, etc.)
+    if (looksLikeProductRelaxed(text)) {
+      if (isInvalidProductName(text)) continue;
+      if (/\b(TOTAL|VAL\.|DIVISION|SUMMARY|SUBTOTAL)\b/i.test(text)) continue;
+
+      const itemDesc = extractProductName(text, qty);
+      if (!itemDesc || itemDesc.length < MIN_PRODUCT_LENGTH) {
+        failed.push({ row: i + 1, text, reason: "Relaxed - no name" });
+        continue;
+      }
+
+      const cleanedName = cleanExtractedProductName(itemDesc);
+      if (!cleanedName || cleanedName.length < MIN_PRODUCT_LENGTH) continue;
+
+      console.log(`  ✅ [RELAXED] Row ${i + 1}: "${cleanedName}" | Qty: ${qty ?? "MISSING"}`);
+      dataRows.push({
+        ITEMDESC: cleanedName,
+        ORDERQTY: qty ?? null,
+        _rawText: text,
+        _sourceRow: i + 1,
+        _tier: 2
+      });
+      continue;
+    }
+
+    // Track as failed for debugging
+    failed.push({ row: i + 1, text, reason: "Not product-like" });
+  }
+
+  console.log(`\n📊 IMAGE OCR SUMMARY:`);
+  console.log(`   Total OCR lines: ${rawLines.length}`);
+  console.log(`   ✅ Extracted: ${dataRows.length}`);
+  console.log(`   ❌ Failed: ${failed.length}`);
+
+  // Log failed lines for debugging
+  if (failed.length > 0) {
+    console.log(`\n🔍 FAILED LINES (first 10):`);
+    failed.slice(0, 10).forEach(f => {
+      console.log(`   Row ${f.row}: "${f.text}" → ${f.reason}`);
+    });
+  }
+
+  return {
+    dataRows,
+    meta: {
+      customerName: customerName || "UNKNOWN",
+      totalRows: rawLines.length,
+      extracted: dataRows.length,
+      failed: failed.length,
+      structure: "IMAGE_OCR"
+    }
+  };
+}
+
+/* =====================================================
    MAIN EXPORT
 ===================================================== */
 
@@ -2045,6 +2187,8 @@ export async function unifiedExtract(file) {
     
     if (name.endsWith(".pdf")) {
       result = await parsePDF(file);
+    } else if (name.match(/\.(jpg|jpeg|png)$/)) {
+      result = await parseImage(file);
     } else if (name.endsWith(".xls") || name.endsWith(".xlsx") || name.endsWith(".csv")) {
       result = parseExcel(file);
     } else if (name.endsWith(".txt")) {

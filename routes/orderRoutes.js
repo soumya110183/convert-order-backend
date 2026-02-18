@@ -34,10 +34,10 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_, file, cb) => {
-    if (file.originalname.match(/\.(pdf|xls|xlsx|txt|csv)$/i)) {
+    if (file.originalname.match(/\.(pdf|xls|xlsx|txt|csv|jpg|jpeg|png)$/i)) {
       cb(null, true);
     } else {
-      cb(new Error("Only PDF, Excel, Text or CSV files allowed"));
+      cb(new Error("Only PDF, Excel, Text, CSV, or Image (JPG/PNG) files allowed"));
     }
   }
 });

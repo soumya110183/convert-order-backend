@@ -47,7 +47,7 @@ export function detectCustomerFromInvoice(rows = [], filename = "") {
     // 🔥 FIX: Don't skip if it contains INVOICE/ORDER but ALSO looks like a business name
     // e.g. "STAR PHARMACEUTICALS Inv No : 123"
     const isJunk = /GSTIN|DL\s*NO|PHONE|TIN|INVOICE|ORDER/i.test(line);
-    const looksLikeBusiness = /\b(PHARMACEUTICALS?|PHARMA|MEDICALS?|AGENCIES|DISTRIBUTORS?)\b/i.test(line);
+    const looksLikeBusiness = /\b(ASSOCIATES?|AGENCIES?|TRADERS?|PHARMA|PHARMACY|PHARMACEUTICALS?|MEDICALS?|DISTRIBUTORS?|ENTERPRISES?|DRUG\s*HOUSE|DRUGS?|WHOLESALE|RETAIL|STORES?|MART|DEPOT|STOCKIST|SURGICALS?|SUPPLIERS?|CO\.?|CORPORATION|CHEMISTS?|HEALTH\s*CARE|HOSPITALS?|CLINICS?|MEDICARE|LIMITED|LTD|PVT|PRIVATE)\b/i.test(line);
     
     if (isJunk && !looksLikeBusiness) continue;
 
@@ -110,7 +110,7 @@ export function detectCustomerFromInvoice(rows = [], filename = "") {
   if (filename) {
       // Decode filename: replace separators with spaces
       const decoded = filename
-        .replace(/\.(xls|xlsx|pdf|csv|txt)$/i, "")
+        .replace(/\.(xls|xlsx|pdf|csv|txt|jpg|jpeg|png)$/i, "")
         .replace(/[-_.]/g, " "); // Replace all separators with space
 
       // Extract words
