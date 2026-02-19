@@ -13,7 +13,8 @@ import {
   getOrderById,
   checkSchemes,
   getProductSchemes,
-  generateDivisionReport
+  generateDivisionReport,
+  createManualUpload
 } from "../controllers/orderController.js";
 
 import {
@@ -57,6 +58,9 @@ import { validateFile } from "../middlewares/inputValidation.js";
 
 // Step 1: Upload & extract
 router.post("/extract", upload.array("files"), validateFile, extractOrderFields);
+
+// Step 1b: Manual Init (Create DB record for manual entry)
+router.post("/manual-init", createManualUpload);
 
 // Step 2: Convert
 // Step 2: Convert

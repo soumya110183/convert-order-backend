@@ -19,28 +19,29 @@ const orderUploadSchema = new mongoose.Schema(
 
     fileHash: {
       type: String,
-      required: true,
+      required: false, // Not required for manual entry
       unique: true,
+      sparse: true, // Allow multiple nulls/missing values
       index: true,
     },
 
     extractedData: {
       type: mongoose.Schema.Types.Mixed,
     },
-convertedData: {
-  headers: {
-    type: [String],
-    default: [],
-  },
-  rows: {
-    type: [mongoose.Schema.Types.Mixed],
-    default: [],
-  },
-},
+    convertedData: {
+      headers: {
+        type: [String],
+        default: [],
+      },
+      rows: {
+        type: [mongoose.Schema.Types.Mixed],
+        default: [],
+      },
+    },
 
     status: {
       type: String,
-      enum: ["UPLOADED", "EXTRACTED", "CONVERTED", "FAILED"],
+      enum: ["UPLOADED", "EXTRACTED", "CONVERTED", "FAILED", "MANUAL_ENTRY"],
       default: "UPLOADED",
       index: true,
     },

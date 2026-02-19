@@ -343,6 +343,37 @@ const schemeRowStyle = {
 };
 
 /* =====================================================
+   MANUAL UPLOAD INIT
+===================================================== */
+export const createManualUpload = async (req, res, next) => {
+  try {
+    const { customerCode, customerName, rows } = req.body;
+
+    if (!customerCode || !rows || rows.length === 0) {
+      return res.status(400).json({ success: false, message: "Missing manual entry data" });
+    }
+
+    const upload = await OrderUpload.create({
+      userId: req.user.id,
+      userEmail: req.user.email,
+      fileName: `Manual Entry - ${new Date().toLocaleString()}`,
+      status: "MANUAL_ENTRY",
+      extractedData: { dataRows: rows }, // Save initial rows
+      customerCode,
+      customerName,
+      recordsProcessed: rows.length,
+      recordsFailed: 0
+    });
+
+    res.json({ success: true, uploadId: upload._id });
+
+  } catch (err) {
+    console.error("❌ MANUAL UPLOAD ERROR:", err);
+    next(err);
+  }
+};
+
+/* =====================================================
    CONVERT ORDERS
 ===================================================== */
 
@@ -429,8 +460,8 @@ if (hasSheets) {
     console.log(`⏳ Processing ${sourceRows.length} rows...\n`);
 
     for (let i = 0; i < sourceRows.length; i++) {
-  const row = sourceRows[i];   // ✅ row is NOW defined
-  const rowNum = i + 1;
+        const row = sourceRows[i];   // ✅ row is NOW defined
+        const rowNum = i + 1;
 
   const qty = Number(row.ORDERQTY);
   if (isNaN(qty) || qty <= 0) {

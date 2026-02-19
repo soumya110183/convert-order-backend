@@ -249,18 +249,19 @@ export async function downloadSchemeFile(req, res, next) {
       "Division": s.division
     }));
 
-    if (schemeDetails.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No scheme details found for this order"
-      });
-    }
-
+    // ALLOW EMPTY SCHEMES: Generate file even if empty, to prevent download errors
+    // if (schemeDetails.length === 0) { ... } -> Removed 404 check
+    
     // Generate Excel
     const wb = XLSX.utils.book_new();
     const headers = ["Product Code", "Product Name", "Order Qty", "Free Qty", "Scheme %", "Division"];
     
-    const ws = XLSX.utils.json_to_sheet(schemeDetails, { header: headers });
+    let ws;
+    if (schemeDetails.length === 0) {
+        ws = XLSX.utils.json_to_sheet([{ "Product Name": "No schemes applied for this order" }], { header: headers });
+    } else {
+        ws = XLSX.utils.json_to_sheet(schemeDetails, { header: headers });
+    }
 
     // 🎨 APPLY STYLING
     
@@ -314,7 +315,8 @@ export async function downloadSchemeFile(req, res, next) {
     XLSX.utils.book_append_sheet(wb, ws, "Scheme Summary");
 
     // Use original filename base + -scheme-summary
-    const originalName = upload.fileName.replace(/\.[^.]+$/, "");
+    // Sanitize filename: Remove commas and other risky chars
+    const originalName = upload.fileName.replace(/\.[^.]+$/, "").replace(/,/g, ""); 
     const fileName = `${originalName}-scheme-summary.xlsx`;
 
     const buffer = XLSX.write(wb, {
@@ -328,7 +330,7 @@ export async function downloadSchemeFile(req, res, next) {
     );
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename=${fileName}`
+      `attachment; filename="${fileName}"`
     );
 
     res.send(buffer);
