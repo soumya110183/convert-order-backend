@@ -23,6 +23,7 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:3000",
+  "http://localhost:3001",
   "http://localhost:5173", 
   "https://convert-order-frontend.vercel.app",
   "https://convert-order-production.up.railway.app"
@@ -80,7 +81,7 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI || process.env.RAILWAY_MONGO_URI)
   .then(async () => {
     console.log("✅ MongoDB connected");
 

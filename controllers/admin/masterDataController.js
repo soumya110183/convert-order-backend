@@ -1898,9 +1898,22 @@ export const updateCustomer = async (req, res) => {
       return res.status(404).json({ error: "CUSTOMER_NOT_FOUND" });
     }
 
+    if (updateFields.customerCode) {
+      const trimmedCode = updateFields.customerCode.trim();
+      const existing = await CustomerMaster.findOne({
+        customerCode: trimmedCode,
+        _id: { $ne: id }
+      });
+      if (existing) {
+        return res.status(409).json({ error: "CUSTOMER_CODE_ALREADY_EXISTS" });
+      }
+    }
+
+    const immutableFields = ["_id", "__v", "createdAt", "updatedAt"];
+
     // Update all provided fields
     Object.keys(updateFields).forEach(key => {
-      if (updateFields[key] !== undefined) {
+      if (!immutableFields.includes(key) && updateFields[key] !== undefined) {
         customer[key] = updateFields[key]?.toString().trim();
       }
     });

@@ -24,8 +24,12 @@ import {
   exportSchemes,
   getDivisions
 } from "../../controllers/admin/masterDataController.js";
+import { protect, adminOnly } from "../../middlewares/authMiddleware.js";
 
 const router = express.Router();
+
+// 🔐 Only Admins can access or modify master data
+router.use(protect, adminOnly);
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
