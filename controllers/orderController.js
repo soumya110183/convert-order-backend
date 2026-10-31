@@ -1236,13 +1236,3 @@ export const generateDivisionReport = async (req, res, next) => {
     next(err);
   }
 };
-
-export default {
-  extractOrderFields,
-  convertOrders,
-  getOrderById,
-  getOrderHistory,
-  checkSchemes,
-  getProductSchemes,
-  generateDivisionReport
-};

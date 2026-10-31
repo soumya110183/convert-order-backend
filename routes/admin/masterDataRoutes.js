@@ -28,8 +28,14 @@ import { protect, adminOnly } from "../../middlewares/authMiddleware.js";
 
 const router = express.Router();
 
-// 🔐 Only Admins can access or modify master data
-router.use(protect, adminOnly);
+// All routes require login; only write operations require admin
+router.use(protect);
+router.use((req, res, next) => {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    return adminOnly(req, res, next);
+  }
+  next();
+});
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
@@ -105,3 +111,4 @@ router.post("/schemes/upload", upload.single("file"), uploadSchemeMaster);
 router.get("/schemes/export", exportSchemes);
 
 export default router;
+
