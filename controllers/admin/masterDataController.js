@@ -1796,7 +1796,7 @@ const query = safeSearch
     }
   : {};
 
-    const [data, total] = await Promise.all([
+    let [data, total] = await Promise.all([
       CustomerMaster.find(query)
         .sort({ customerCode: 1 })
         .skip((page - 1) * limit)
@@ -1805,6 +1805,40 @@ const query = safeSearch
 
       CustomerMaster.countDocuments(query)
     ]);
+
+    // Smart Fallback: If exact query has 0 results, match meaningful keywords
+    if (data.length === 0 && rawSearch.trim().length >= 3) {
+      const cleanTokens = rawSearch
+        .replace(/[.,\-&()[\]{}\'\"]/g, " ")
+        .replace(/\b(P\s*LTD|PLTD|PVT|LIMITED|LTD|DISTRIBUTORS?|AGENCIES?)\b/gi, "")
+        .trim()
+        .split(/\s+/)
+        .filter(t => t.length >= 2);
+
+      if (cleanTokens.length > 0) {
+        const fallbackRegex = cleanTokens.map(escapeRegex).join(".*");
+        const fallbackQuery = {
+          $or: [
+            { customerName: { $regex: fallbackRegex, $options: "i" } },
+            { city: { $regex: fallbackRegex, $options: "i" } }
+          ]
+        };
+
+        const [fbData, fbTotal] = await Promise.all([
+          CustomerMaster.find(fallbackQuery)
+            .sort({ customerCode: 1 })
+            .skip((page - 1) * limit)
+            .limit(limit)
+            .lean(),
+          CustomerMaster.countDocuments(fallbackQuery)
+        ]);
+
+        if (fbData.length > 0) {
+          data = fbData;
+          total = fbTotal;
+        }
+      }
+    }
 
     res.json({
       success: true,
