@@ -39,7 +39,7 @@ function normalize(text = "") {
   normalized = normalized.replace(/\s+(EKM|PKD|TVM|KKD|CALICUT|KANNUR|ERNAKULAM|KOCHI|KERALA)\s*$/i, "");
   
   // STEP 4: Remove trailing business structure words (only at end)
-  normalized = normalized.replace(/\s+(PVT\s+LTD|PRIVATE\s+LIMITED|LIMITED|LTD|LLP|LLC|INC|CORP|CORPORATION|CO)\s*$/i, "");
+  normalized = normalized.replace(/\s+(PVT\s+LTD|P\s+LTD|PLTD|PRIVATE\s+LIMITED|LIMITED|LTD|LLP|LLC|INC|CORP|CORPORATION|CO)\s*$/i, "");
   
   // STEP 5: Clean up
   normalized = normalized.replace(/\s+/g, " ").trim();
@@ -150,3 +150,4 @@ export function matchCustomerSmart(invoiceCustomerName, customers = []) {
     auto: null
   };
 }
+
